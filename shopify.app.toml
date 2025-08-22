@@ -3,7 +3,7 @@
 client_id = "e06795ee74e6291243df3630aef28abe"
 name = "post-purchase-app"
 handle = "post-purchase-app-78"
-application_url = "https://be4695c9f158.ngrok-free.app"
+application_url = "https://e690b5e3b5e0.ngrok-free.app"
 embedded = true
 
 [build]
@@ -27,9 +27,9 @@ scopes = "write_products"
 
 [auth]
 redirect_urls = [
-  "https://be4695c9f158.ngrok-free.app/auth/callback",
-  "https://be4695c9f158.ngrok-free.app/auth/shopify/callback",
-  "https://be4695c9f158.ngrok-free.app/api/auth/callback"
+  "https://e690b5e3b5e0.ngrok-free.app/auth/callback",
+  "https://e690b5e3b5e0.ngrok-free.app/auth/shopify/callback",
+  "https://e690b5e3b5e0.ngrok-free.app/api/auth/callback"
 ]
 
 [pos]

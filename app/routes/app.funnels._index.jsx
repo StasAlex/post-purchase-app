@@ -33,6 +33,7 @@ export default function FunnelsPage() {
 
   return (
     <Page title="Funnels"
+          fullWidth={true}
           primaryAction={{
             content: "Create funnel",
             onAction: () => nav(`/app/funnels/new${search}`),

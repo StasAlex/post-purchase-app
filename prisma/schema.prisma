@@ -33,30 +33,41 @@ model Session {
 
 // --- Funnels / Analytics ---
 model Funnel {
+  id           String   @id @default(cuid())
+  shopDomain   String
+  name         String
+  discountPct  Int
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // ВАЖНО: тут на реальные модели Trigger/Offer
+  triggers     Trigger[]
+  offers       Offer[]
+}
+
+model Trigger {
   id          String   @id @default(cuid())
-  shopDomain  String   // my-store.myshopify.com
-  name        String
-  discountPct Int
-  active      Boolean  @default(true)
-  triggers    FunnelTrigger[]
-  offers      FunnelOffer[]
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  funnel      Funnel   @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+  funnelId    String
+
+  productGid  String
+  // здесь будем хранить выбранные варианы товара
+  variantGids Json?
+
+  @@index([funnelId])
 }
 
-model FunnelTrigger {
-  id         String  @id @default(cuid())
-  funnelId   String
-  funnel     Funnel  @relation(fields: [funnelId], references: [id], onDelete: Cascade)
-  productGid String  @unique   // gid://shopify/Product/...
-}
+model Offer {
+  id          String   @id @default(cuid())
+  funnel      Funnel   @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+  funnelId    String
 
-model FunnelOffer {
-  id         String  @id @default(cuid())
-  funnelId   String
-  funnel     Funnel  @relation(fields: [funnelId], references: [id], onDelete: Cascade)
-  productGid String
-  sort       Int     @default(0)
+  productGid  String
+  sort        Int      @default(0)
+  variantGids Json?
+
+  @@index([funnelId])
 }
 
 model Event {

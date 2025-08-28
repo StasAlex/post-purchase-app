@@ -66,6 +66,7 @@ export default function Index() {
       title="Post-purchase funnels"
       primaryAction={{ content: "Create funnel", onAction: () => nav(`/app/funnels/new${search}`) }}
       secondaryActions={[{ content: "All funnels", onAction: () => nav(`/app/funnels${search}`) }]}
+      fullWidth={true}
     >
       <Layout>
         {/* левая колонка — основное */}

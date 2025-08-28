@@ -70,4 +70,10 @@ export default defineConfig({
   optimizeDeps: {
     include: ["@shopify/app-bridge-react", "@shopify/polaris"],
   },
+  resolve: {
+    alias: {
+      "@shopify/app-bridge": "/app/shims/appBridge.js",
+      "@shopify/app-bridge/actions": "/app/shims/resourcePicker.js",
+    },
+  },
 });

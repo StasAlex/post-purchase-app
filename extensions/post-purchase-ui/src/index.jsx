@@ -2,21 +2,15 @@
 import {
   extend, render,
   BlockStack, Button, CalloutBanner, Heading, Image,
-  Layout, TextBlock, TextContainer, View,
+  TextBlock, TextContainer, View, Layout
 } from "@shopify/post-purchase-ui-extensions-react";
 
-/** ПУБЛИЧНЫЙ URL вашего Remix */
 const API_BASE = "https://418f496cfdfd.ngrok-free.app";
 
 const PLACEHOLDER = "https://cdn.shopify.com/static/images/examples/img-placeholder-1120x1120.png";
 const DEBUG = true;
 
-/* сетка */
-const MAX_COLS = 3;
-const IMG_RATIO = 2 / 3;
-
-/* символы валют */
-const CURRENCY_SYMBOL = { UAH: "₴", USD: "$", EUR: "€", GBP: "£", CAD: "CA$", AUD: "A$", PLN: "zł", JPY: "¥" };
+const CURRENCY_SYMBOL = { UAH:"₴", USD:"$", EUR:"€", GBP:"£", CAD:"CA$", AUD:"A$", PLN:"zł", JPY:"¥" };
 
 const uniq = (arr) => Array.from(new Set(arr));
 
@@ -44,7 +38,9 @@ function parsePriceString(s) {
   const code = (s.match(/[A-Z]{3}/) || [])[0] || null;
   return { amount: Number.isFinite(amount) ? amount : null, code };
 }
-const hardPrice = (amount, code) => (amount == null || !code ? null : `${(CURRENCY_SYMBOL[code] || code)}${Number(amount).toFixed(2)}`);
+
+const hardPrice = (amount, code) =>
+  (amount == null || !code) ? null : `${(CURRENCY_SYMBOL[code] || code)}${Number(amount).toFixed(2)}`;
 
 /* =========================
    ShouldRender
@@ -61,9 +57,13 @@ extend("Checkout::PostPurchase::ShouldRender", async ({ storage, inputData }) =>
   let offers = [];
   const debug = { shop, lineItemsCount: lineItems.length, productGids, fetch: {} };
 
+  console.log("[PP] ShouldRender → input", { shop, productGids, lineItemsCount: lineItems.length });
+
   if (shop && productGids.length) {
     try {
       const url = `${API_BASE}/api/funnels/match?shop=${encodeURIComponent(shop)}&gids=${encodeURIComponent(productGids.join(","))}`;
+      console.log("[PP] fetch", url);
+
       const res = await fetch(url, { cache: "no-store", credentials: "omit" });
       debug.fetch.ok = res.ok;
       debug.fetch.status = res.status;
@@ -75,18 +75,23 @@ extend("Checkout::PostPurchase::ShouldRender", async ({ storage, inputData }) =>
       debug.serverDebug = data?.debug ?? null;
 
       offers = Array.isArray(data?.offers)
-        ? data.offers.map((o) => {
+        ? data.offers.map((o, idx) => {
           const parsed = typeof o.price === "string" ? parsePriceString(o.price) : { amount: null, code: null };
           const amount = o.priceAmount ?? parsed.amount;
           const code   = o.currencyCode ?? parsed.code;
           const price  = hardPrice(amount, code) || o.price || null;
-          return { ...o, price };
+          const out = { ...o, price };
+          console.log(`[PP] offer#${idx}`, out);
+          return out;
         })
         : [];
     } catch (e) {
       debug.fetch.error = String(e?.message || e);
+      console.warn("[PP] fetch error:", e);
     }
   }
+
+  console.log("[PP] ShouldRender → normalized offers:", offers.length);
 
   await storage.update({ offers, debugInfo: debug });
   return { render: offers.length > 0 };
@@ -97,34 +102,57 @@ extend("Checkout::PostPurchase::ShouldRender", async ({ storage, inputData }) =>
 ========================= */
 render("Checkout::PostPurchase::Render", App);
 
-const chunk = (arr, n) => arr.reduce((rows, _, i) => (i % n ? rows : [...rows, arr.slice(i, i + n)]), []);
+const MAX_COLS_SM = 2;
+const MAX_COLS_MD = 3;
+const MAX_COLS_LG = 5;
+const CONTAINER_MAX = 1200;
+
+const chunk = (arr, n) =>
+  arr.reduce((rows, _, i) => (i % n ? rows : [...rows, arr.slice(i, i + n)]), []);
+
+render("Checkout::PostPurchase::Render", App);
 
 export function App({ storage }) {
-  const initial = storage?.initialData || {};
-  const offers = Array.isArray(initial.offers) ? initial.offers : [];
+  const initial   = storage?.initialData || {};
+  const offers    = Array.isArray(initial.offers) ? initial.offers : [];
   const debugInfo = initial.debugInfo || {};
-  const rows = chunk(offers, MAX_COLS);
+
+  const rows = chunk(offers, MAX_COLS_LG);
+
+  console.log("[PP] GRID → total offers:", offers.length, "rows:", rows.length);
+  rows.forEach((row, i) => {
+    const sizesSm = Array(Math.min(row.length, MAX_COLS_SM)).fill(1);
+    const sizesMd = Array(Math.min(row.length, MAX_COLS_MD)).fill(1);
+    const sizesLg = Array(Math.min(row.length, MAX_COLS_LG)).fill(1);
+    console.log(`[PP] row#${i}`, {
+      rowLen: row.length,
+      sizes: { small: sizesSm.length, medium: sizesMd.length, large: sizesLg.length },
+    });
+  });
 
   return (
     <BlockStack spacing="loose" alignment="center">
-      <CalloutBanner title="Special offer just for you!" />
+      <CalloutBanner title="Special offer just for you!"  />
 
-      <View maxInlineSize={1200} padding="base">
+      <View maxInlineSize={CONTAINER_MAX} padding="base">
         {rows.map((row, idx) => {
-          const colsLg = Math.min(row.length, 3);
-          const colsMd = Math.min(row.length, 2);
+          const sizesSm = Array(Math.min(row.length, MAX_COLS_SM)).fill(1);
+          const sizesMd = Array(Math.min(row.length, MAX_COLS_MD)).fill(1);
+          const sizesLg = Array(Math.min(row.length, MAX_COLS_LG)).fill(1);
+
           return (
             <Layout
               key={idx}
               media={[
-                { viewportSize: "small",  sizes: [1] },
-                { viewportSize: "medium", sizes: Array(colsMd).fill(1) },
-                { viewportSize: "large",  sizes: Array(colsLg).fill(1) },
+                { viewportSize: "small",  sizes: sizesSm },
+                { viewportSize: "medium", sizes: sizesMd },
+                { viewportSize: "large",  sizes: sizesLg },
               ]}
             >
               {row.map((offer, j) => (
+                // «гаттеры» — через внутренний padding
                 <View key={offer.id || j} padding="base">
-                  <OfferCard offer={offer} />
+                  <OfferCard offer={offer} index={`${idx}:${j}`} />
                 </View>
               ))}
             </Layout>
@@ -132,20 +160,25 @@ export function App({ storage }) {
         })}
       </View>
 
-      {(DEBUG || offers.length === 0) ? <DebugPanel debugInfo={debugInfo} offersCount={offers.length} /> : null}
+      {(DEBUG || offers.length === 0) ? (
+        <DebugPanel debugInfo={debugInfo} offersCount={offers.length} />
+      ) : null}
     </BlockStack>
   );
 }
 
-function OfferCard({ offer }) {
-  const img = offer?.image || PLACEHOLDER;
+// необязательно, но удобно видеть, что рисуем
+function OfferCard({ offer, index }) {
+  const img   = offer?.image || PLACEHOLDER;
   const title = offer?.title || "Product";
   const price = offer?.price || null;
+
+  console.log(`[PP] render card ${index}`, { title, price, hasImage: Boolean(offer?.image) });
 
   return (
     <View border="base" cornerRadius="large" padding="base">
       <BlockStack spacing="tight">
-        <Image source={img} aspectRatio={IMG_RATIO} fit="contain" />
+        <Image source={img} aspectRatio={2/3} fit="contain" />
         <TextContainer>
           <Heading>{title}</Heading>
           {price ? <TextBlock>{price}</TextBlock> : null}

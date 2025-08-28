@@ -33,54 +33,66 @@ const normalizeGids = (arr) =>
 const money = (amount, currency) =>
   amount != null && currency ? `${Number(amount).toFixed(2)} ${currency}` : null;
 
-const apiVersion = () => shopify?.api?.config?.apiVersion || "2024-07";
-const digitsFromGids = (ids) => (ids || []).map((gid) => gid?.match(/\d+/)?.[0]).filter(Boolean);
+const apiVersion = () =>
+  (shopify?.api?.config?.apiVersion || process.env.SHOPIFY_API_VERSION || "2024-07");
+
+const digitsFromGids = (ids) =>
+  (ids || []).map((gid) => gid?.match(/\d+/)?.[0]).filter(Boolean);
 
 /* =========================
-   Admin client (OFFLINE)
+   OFFLINE session loader — без SDK GraphQL клиента
 ========================= */
-async function getAdminClientForShop(shop) {
+async function getOfflineSession(shop) {
   try {
-    const offlineId = shopify.api.session.getOfflineId(shop);
-    const session = await shopify.sessionStorage.loadSession(offlineId);
-
-    // шаблоны у Shopify разные: пробуем оба места
-    const GraphqlClient =
-      shopify.api?.clients?.Graphql ?? shopify.clients?.Graphql ?? null;
+    const offlineId = `offline_${shop}`;
+    const storage = shopify?.sessionStorage;
+    const session = storage && typeof storage.loadSession === "function"
+      ? await storage.loadSession(offlineId)
+      : null;
 
     const debug = {
       offlineId,
       hasSession: Boolean(session),
       usedSessionId: session?.id || null,
       isOnline: session?.isOnline ?? null,
-      hasGraphqlCtor: Boolean(GraphqlClient),
       scopes: session?.scope || null,
     };
 
     if (!session) {
-      console.warn("[funnels.match] No offline session", debug);
-      return { admin: null, session: null, debug: { reason: "no-offline-session", ...debug } };
+      return { session: null, debug: { reason: "no-offline-session", ...debug } };
     }
-
-    if (!GraphqlClient) {
-      console.warn("[funnels.match] No Admin client", debug);
-      // вернём session: дальше упадём на REST
-      return { admin: null, session, debug: { reason: "no-graphql-ctor", ...debug } };
-    }
-
-    return { admin: new GraphqlClient({ session }), session, debug };
+    return { session, debug: { reason: "http-graphql", ...debug } };
   } catch (e) {
-    console.error("[funnels.match] getAdminClientForShop error:", e);
-    return { admin: null, session: null, debug: { reason: "exception", error: String(e?.message || e) } };
+    return { session: null, debug: { reason: "exception", error: String(e?.message || e) } };
   }
 }
 
 /* =========================
-   Fetch meta via GraphQL
+   Shop currency (для REST)
 ========================= */
-async function fetchProductsMetaGraphQL(admin, ids) {
-  if (!admin || !ids?.length) {
-    return { byId: {}, debug: { kind: "graphql", requested: ids || [], received: [] } };
+async function fetchShopCurrency(session) {
+  const v = apiVersion();
+  const url = `https://${session.shop}/admin/api/${v}/shop.json?fields=currency`;
+  try {
+    const r = await fetch(url, {
+      headers: {
+        "X-Shopify-Access-Token": session.accessToken,
+        "Content-Type": "application/json",
+      },
+    });
+    const js = await r.json();
+    return js?.shop?.currency || null;
+  } catch {
+    return null;
+  }
+}
+
+/* =========================
+   Admin GraphQL через HTTP POST по оффлайн-токену
+========================= */
+async function fetchProductsMetaGraphQLHTTP(session, ids) {
+  if (!session || !ids?.length) {
+    return { byId: {}, debug: { kind: "graphql-http", requested: ids || [], received: [] } };
   }
 
   const query = `#graphql
@@ -99,32 +111,45 @@ async function fetchProductsMetaGraphQL(admin, ids) {
   `;
 
   try {
-    const resp = await admin.query({ data: { query, variables: { ids } } });
-    const nodes = resp?.body?.data?.nodes || [];
+    const v = apiVersion();
+    const resp = await fetch(`https://${session.shop}/admin/api/${v}/graphql.json`, {
+      method: "POST",
+      headers: {
+        "X-Shopify-Access-Token": session.accessToken,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ query, variables: { ids } }),
+    });
+    const js = await resp.json();
+    const nodes = js?.data?.nodes || [];
+
     const byId = {};
     for (const n of nodes) {
       if (!n?.id) continue;
-      const v = n.variants?.nodes?.[0];
+      const v0 = n.variants?.nodes?.[0];
+      const amount = v0?.price?.amount != null ? Number(v0.price.amount) : null;
+      const currency = v0?.price?.currencyCode || null;
       byId[n.id] = {
         id: n.id,
         title: n.title || "Untitled product",
         image: n.featuredImage?.url || null,
-        variantId: v?.id || null,
-        price: money(v?.price?.amount, v?.price?.currencyCode),
+        variantId: v0?.id || null,
+        price: money(amount, currency),     // "100.00 UAH"
+        priceAmount: amount,                // число
+        currencyCode: currency,             // "UAH"
       };
     }
-    const debug = { kind: "graphql", requested: ids, received: nodes.map(n => n?.id).filter(Boolean) };
-    console.log("[funnels.match] fetched meta (GraphQL):", debug);
+
+    const debug = { kind: "graphql-http", requested: ids, received: nodes.map(n => n?.id).filter(Boolean) };
     return { byId, debug };
   } catch (e) {
-    const debug = { kind: "graphql", requested: ids, received: [], error: String(e?.message || e) };
-    console.error("[funnels.match] fetchProductsMetaGraphQL error:", debug);
+    const debug = { kind: "graphql-http", requested: ids, received: [], error: String(e?.message || e) };
     return { byId: {}, debug };
   }
 }
 
 /* =========================
-   Fetch meta via REST (fallback)
+   REST фолбэк
 ========================= */
 async function fetchProductsMetaREST(session, ids) {
   if (!session || !ids?.length) {
@@ -140,12 +165,15 @@ async function fetchProductsMetaREST(session, ids) {
   const url = `https://${session.shop}/admin/api/${v}/products.json?ids=${numeric.join(",")}&fields=id,title,image,variants`;
 
   try {
-    const r = await fetch(url, {
-      headers: {
-        "X-Shopify-Access-Token": session.accessToken,
-        "Content-Type": "application/json",
-      },
-    });
+    const [r, shopCurrency] = await Promise.all([
+      fetch(url, {
+        headers: {
+          "X-Shopify-Access-Token": session.accessToken,
+          "Content-Type": "application/json",
+        },
+      }),
+      fetchShopCurrency(session),
+    ]);
 
     const js = await r.json();
     const products = js?.products || [];
@@ -153,13 +181,16 @@ async function fetchProductsMetaREST(session, ids) {
     for (const p of products) {
       const gid = `gid://shopify/Product/${p.id}`;
       const v0 = Array.isArray(p.variants) ? p.variants[0] : null;
+      const amount = v0?.price != null ? Number(v0.price) : null;
+      const currency = shopCurrency || null;
       byId[gid] = {
         id: gid,
         title: p.title || "Untitled product",
         image: p.image?.src || null,
         variantId: v0 ? `gid://shopify/ProductVariant/${v0.id}` : null,
-        // REST цена без валюты; при желании можно подтянуть /shop.json и добавить валюту
-        price: v0?.price ?? null,
+        price: money(amount, currency),
+        priceAmount: amount,
+        currencyCode: currency,
       };
     }
     const debug = {
@@ -168,12 +199,11 @@ async function fetchProductsMetaREST(session, ids) {
       status: r.status,
       received: products.map(p => `gid://shopify/Product/${p.id}`),
       url,
+      shopCurrency,
     };
-    console.log("[funnels.match] fetched meta (REST):", debug);
     return { byId, debug };
   } catch (e) {
     const debug = { kind: "rest", requested: ids, received: [], error: String(e?.message || e) };
-    console.error("[funnels.match] fetchProductsMetaREST error:", debug);
     return { byId: {}, debug };
   }
 }
@@ -195,22 +225,22 @@ async function matchOffers(shop, productGids) {
     new Set((funnel?.offers ?? []).map((o) => toProductGid(o.productGid)).filter(Boolean))
   );
 
-  // база — просто id
   let enriched = offerIds.map((id) => ({ id }));
 
-  // получаем админ клиента / сессию
-  const { admin, session, debug: adminDbg } = await getAdminClientForShop(shop);
+  // оффлайн сессия
+  const { session, debug: sessDbg } = await getOfflineSession(shop);
 
-  // сначала GraphQL
   let byId = {};
   let fetchDbg = null;
-  if (admin) {
-    const res = await fetchProductsMetaGraphQL(admin, offerIds);
+
+  // GraphQL через HTTP
+  if (session) {
+    const res = await fetchProductsMetaGraphQLHTTP(session, offerIds);
     byId = res.byId;
     fetchDbg = res.debug;
   }
 
-  // если пусто — REST фолбэк
+  // если вдруг пусто — REST фолбэк
   if (!Object.keys(byId).length && session) {
     const res = await fetchProductsMetaREST(session, offerIds);
     byId = res.byId;
@@ -223,12 +253,14 @@ async function matchOffers(shop, productGids) {
     image: byId[id]?.image || null,
     variantId: byId[id]?.variantId || null,
     price: byId[id]?.price || null,
+    priceAmount: byId[id]?.priceAmount ?? null,
+    currencyCode: byId[id]?.currencyCode ?? null,
   }));
 
   const debug = {
     funnelId: funnel?.id || null,
     offerIds,
-    admin: adminDbg,
+    admin: sessDbg,   // что с сессией
     fetchDbg,
     enrichment: { fetchedKeys: Object.keys(byId) },
   };

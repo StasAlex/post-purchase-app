@@ -16,49 +16,32 @@ import {
 const APP_URL = process.env.APP_URL;
 if (!APP_URL) console.warn("[PP] APP_URL is not set. Put APP_URL in .env");
 
-const PLACEHOLDER =
-  "https://cdn.shopify.com/static/images/examples/img-placeholder-1120x1120.png";
+const PLACEHOLDER = "https://cdn.shopify.com/static/images/examples/img-placeholder-1120x1120.png";
 const DEBUG = true;
 
-const CURRENCY_SYMBOL = {
-  UAH: "₴",
-  USD: "$",
-  EUR: "€",
-  GBP: "£",
-  CAD: "CA$",
-  AUD: "A$",
-  PLN: "zł",
-  JPY: "¥",
-};
+const CURRENCY_SYMBOL = { UAH: "₴", USD: "$", EUR: "€", GBP: "£", CAD: "CA$", AUD: "A$", PLN: "zł", JPY: "¥" };
 const uniq = (arr) => Array.from(new Set(arr || []));
 
-function hardPrice(amount, code) {
-  return amount == null || !code
-    ? null
-    : `${CURRENCY_SYMBOL[code] || code}${Number(amount).toFixed(2)}`;
-}
+const hardPrice = (amount, code) =>
+  amount == null || !code ? null : `${CURRENCY_SYMBOL[code] || code}${Number(amount).toFixed(2)}`;
+
 function parsePriceString(s) {
   if (typeof s !== "string") return { amount: null, code: null };
-  const amount = Number(
-    (s.match(/[\d]+(?:[.,]\d+)?/) || [])[0]?.replace(",", "."),
-  );
+  const amount = Number((s.match(/[\d]+(?:[.,]\d+)?/) || [])[0]?.replace(",", "."));
   const code = (s.match(/[A-Z]{3}/) || [])[0] || null;
   return { amount: Number.isFinite(amount) ? amount : null, code };
 }
+
 function extractProductGidsFromLineItem(li) {
   const out = [];
   try {
     if (li?.product?.id) out.push(li.product.id);
     if (li?.variant?.product?.id) out.push(li.variant.product.id);
     if (li?.merchandise?.product?.id) out.push(li.merchandise.product.id);
-    if (typeof li?.productID === "string" && li.productID.startsWith("gid://"))
-      out.push(li.productID);
-    if (typeof li?.productID === "number")
-      out.push(`gid://shopify/Product/${li.productID}`);
-
+    if (typeof li?.productID === "string" && li.productID.startsWith("gid://")) out.push(li.productID);
+    if (typeof li?.productID === "number") out.push(`gid://shopify/Product/${li.productID}`);
     const s = JSON.stringify(li);
     out.push(...(s.match(/gid:\/\/shopify\/Product\/\d+/g) ?? []));
-
     const num1 = s.match(/"productId"\s*:\s*(\d+)/i)?.[1];
     const num2 = s.match(/"product_id"\s*:\s*(\d+)/i)?.[1];
     if (num1) out.push(`gid://shopify/Product/${num1}`);
@@ -68,22 +51,19 @@ function extractProductGidsFromLineItem(li) {
 }
 
 /* =========================
-   ShouldRender — подгружаем офферы и сохраняем meta
+   ShouldRender — грузим офферы
 ========================= */
 extend("Checkout::PostPurchase::ShouldRender", async ({ storage, inputData }) => {
   const lineItems =
     inputData?.initialPurchase?.lineItems ??
-    inputData?.initialPurchase?.lines ??
-    [];
+    inputData?.initialPurchase?.lines ?? [];
 
-  // shop на этом этапе обычно есть
   const shop =
     inputData?.shop?.myshopifyDomain ||
     inputData?.shopDomain ||
     inputData?.shop?.domain ||
     "";
 
-  // referenceId может лежать в нескольких местах
   const referenceId =
     inputData?.referenceId ||
     inputData?.initialPurchase?.referenceId ||
@@ -93,42 +73,36 @@ extend("Checkout::PostPurchase::ShouldRender", async ({ storage, inputData }) =>
   const productGids = uniq(lineItems.flatMap(extractProductGidsFromLineItem));
 
   let offers = [];
-  const debug = {
-    shop,
-    lineItemsCount: lineItems.length,
-    productGids,
-    fetch: {},
-  };
+  const debug = { shop, lineItemsCount: lineItems.length, productGids, fetch: {} };
 
   if (APP_URL && shop && productGids.length) {
     try {
-      const url = `${APP_URL}/api/funnels/match?shop=${encodeURIComponent(
-        shop,
-      )}&gids=${encodeURIComponent(productGids.join(","))}`;
+      const url = `${APP_URL}/api/funnels/match?shop=${encodeURIComponent(shop)}&gids=${encodeURIComponent(
+        productGids.join(","),
+      )}`;
       const res = await fetch(url, { cache: "no-store", credentials: "omit" });
       debug.fetch.ok = res.ok;
       debug.fetch.status = res.status;
 
       let data = null;
-      try {
-        data = await res.json();
-      } catch (e) {
-        debug.fetch.jsonError = String(e?.message || e);
-      }
+      try { data = await res.json(); } catch (e) { debug.fetch.jsonError = String(e?.message || e); }
 
       debug.responseKeys = data ? Object.keys(data) : [];
       debug.serverDebug = data?.debug ?? null;
 
       offers = Array.isArray(data?.offers)
         ? data.offers.map((o) => {
-          const parsed =
-            typeof o.price === "string"
-              ? parsePriceString(o.price)
-              : { amount: null, code: null };
+          const parsed = typeof o.price === "string" ? parsePriceString(o.price) : { amount: null, code: null };
           const amount = o.priceAmount ?? parsed.amount;
           const code = o.currencyCode ?? parsed.code;
           const price = hardPrice(amount, code) || o.price || null;
-          return { ...o, price };
+
+          // нормализуем variantId в ЧИСЛО
+          const gidLike = o.variantId ?? o.variant_id ?? null;
+          const vidNum = Number(String(gidLike ?? "").match(/\d+$/)?.[0]);
+          const variantId = Number.isFinite(vidNum) ? vidNum : (typeof o.variantId === "number" ? o.variantId : null);
+
+          return { ...o, price, variantId, variantIdGid: gidLike ?? null };
         })
         : [];
     } catch (e) {
@@ -136,18 +110,12 @@ extend("Checkout::PostPurchase::ShouldRender", async ({ storage, inputData }) =>
     }
   }
 
-  // сохраняем ещё meta, чтобы Render не гадал
-  await storage.update({
-    offers,
-    debugInfo: debug,
-    meta: { shop, referenceId },
-  });
-
+  await storage.update({ offers, debugInfo: debug, meta: { shop, referenceId } });
   return { render: offers.length > 0 };
 });
 
 /* =========================
-   Render — сетка и добавление
+   Render
 ========================= */
 render("Checkout::PostPurchase::Render", App);
 
@@ -163,7 +131,6 @@ export function App({ storage, inputData, applyChangeset, done }) {
 
   const canApply = typeof applyChangeset === "function";
 
-  // Надёжно восстанавливаем referenceId + shop
   const referenceId =
     meta.referenceId ||
     inputData?.referenceId ||
@@ -171,21 +138,25 @@ export function App({ storage, inputData, applyChangeset, done }) {
     inputData?.initialPurchase?.id ||
     null;
 
-  console.log('inputData', inputData)
-
   const shop =
-        meta.shop ||
-        inputData?.shop?.myshopifyDomain ||
-        inputData?.shopDomain ||
-        (inputData?.shop?.domain?.endsWith('.myshopify.com') ? inputData.shop.domain : null) ||
-       null;
-
+    meta.shop ||
+    inputData?.shop?.myshopifyDomain ||
+    inputData?.shopDomain ||
+    (inputData?.shop?.domain?.endsWith(".myshopify.com") ? inputData.shop.domain : null) ||
+    null;
 
   const token = inputData?.token || null;
 
-  async function addVariantToOrder(variantId) {
-    if (!variantId) {
-      console.warn("[PP] No variantId on offer");
+  // Если открыто с превью темы — не пытаемся добавлять в заказ (Shopify блокирует)
+  const isPreviewCheckout = typeof location?.search === "string" && /(?:^|[?&])preview_theme_id=/.test(location.search);
+  const checkoutOrigin = "https://checkout.shopify.com";
+
+  async function addVariantToOrder(variantIdRaw) {
+    const vid =
+      typeof variantIdRaw === "number" ? variantIdRaw : Number(String(variantIdRaw ?? "").match(/\d+$/)?.[0]);
+
+    if (!Number.isFinite(vid)) {
+      console.warn("[PP] Bad variantId (need number):", variantIdRaw);
       return;
     }
     if (!APP_URL) {
@@ -193,34 +164,30 @@ export function App({ storage, inputData, applyChangeset, done }) {
       return;
     }
     if (!token || !referenceId || !shop) {
-      console.warn("[PP] Missing token/referenceId/shop in inputData", {
-        hasToken: !!token,
-        referenceId,
-        shop,
-      });
+      console.warn("[PP] Missing token/referenceId/shop in inputData", { hasToken: !!token, referenceId, shop });
+      return;
+    }
+    if (isPreviewCheckout) {
+      console.warn("[PP] Theme preview is active — changesets are disabled by Shopify.");
       return;
     }
 
-    const changes = [{ type: "add_variant", variantId, quantity: 1 }];
+    // ⚠️ snake_case — variant_id
+    const changes = [{ type: "add_variant", variant_id: vid, quantity: 1 }];
 
     try {
-      // 1) просим наш сервер подписать changeset
       const res = await fetch(`${APP_URL}/api/postpurchase/sign`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          authorization: `Bearer ${token}`, // обязательно!
+          authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({
-          shop, // your-store.myshopify.com
-          referenceId,
-          changes,
-        }),
+        body: JSON.stringify({ shop, referenceId, changes, checkoutOrigin }),
       });
 
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) {
-        console.error("[PP] sign failed", { status: res.status, payload });
+        console.error("[PP] sign failed", payload);
         return;
       }
 
@@ -230,20 +197,14 @@ export function App({ storage, inputData, applyChangeset, done }) {
         return;
       }
 
-      // 2) применяем changeset
       if (!canApply) {
-        console.warn(
-          "[PP] applyChangeset not available in this preview. Place a test order to try.",
-        );
+        console.warn("[PP] applyChangeset not available in preview");
         return;
       }
 
       const result = await applyChangeset(changeset);
       console.log("[PP] applyChangeset →", result);
-
-      if (result?.status === "ACCEPTED" && typeof done === "function") {
-        await done();
-      }
+      if (result?.status === "ACCEPTED" && typeof done === "function") await done();
     } catch (e) {
       console.error("[PP] addVariantToOrder error:", e);
     }
@@ -257,7 +218,14 @@ export function App({ storage, inputData, applyChangeset, done }) {
         </CalloutBanner>
       )}
 
-      {!canApply && (
+      {isPreviewCheckout && (
+        <CalloutBanner title="Theme preview mode" status="warning">
+          This is a checkout theme preview. Adding items to the order is disabled by Shopify in preview.
+          Place a test order (no preview_theme_id) to test the upsell.
+        </CalloutBanner>
+      )}
+
+      {!isPreviewCheckout && !canApply && (
         <CalloutBanner title="Preview mode" status="info">
           Adding to order is disabled in this preview. Place a test order to try.
         </CalloutBanner>
@@ -266,17 +234,8 @@ export function App({ storage, inputData, applyChangeset, done }) {
       <View inlineSize="fill" maxInlineSize={CONTAINER_MAX} padding="base">
         <Tiles maxPerLine={5} spacing="base" align="center">
           {offers.map((offer, i) => (
-            <View
-              key={offer.id || i}
-              minInlineSize={CARD_MIN}
-              maxInlineSize={CARD_MAX}
-              padding="base"
-            >
-              <OfferCard
-                offer={offer}
-                onAdd={() => addVariantToOrder(offer?.variantId)}
-                disabled={!canApply}
-              />
+            <View key={offer.id || i} minInlineSize={CARD_MIN} maxInlineSize={CARD_MAX} padding="base">
+              <OfferCard offer={offer} onAdd={() => addVariantToOrder(offer?.variantId)} disabled={isPreviewCheckout || !canApply} />
             </View>
           ))}
         </Tiles>
@@ -318,26 +277,15 @@ function DebugPanel({ debugInfo, offersCount }) {
           <Heading>Debug</Heading>
           <TextBlock>offersCount: {offersCount}</TextBlock>
           <TextBlock>shop: {debugInfo?.shop || "-"}</TextBlock>
+          <TextBlock>lineItemsCount: {String(debugInfo?.lineItemsCount ?? 0)}</TextBlock>
+          <TextBlock>productGids: {JSON.stringify(debugInfo?.productGids || [])}</TextBlock>
           <TextBlock>
-            lineItemsCount: {String(debugInfo?.lineItemsCount ?? 0)}
-          </TextBlock>
-          <TextBlock>
-            productGids: {JSON.stringify(debugInfo?.productGids || [])}
-          </TextBlock>
-          <TextBlock>
-            fetch: ok={String(debugInfo?.fetch?.ok)} status=
-            {String(debugInfo?.fetch?.status)} err=
+            fetch: ok={String(debugInfo?.fetch?.ok)} status={String(debugInfo?.fetch?.status)} err=
             {debugInfo?.fetch?.error || "none"}
           </TextBlock>
-          {debugInfo?.fetch?.jsonError ? (
-            <TextBlock>jsonError: {debugInfo.fetch.jsonError}</TextBlock>
-          ) : null}
-          <TextBlock>
-            responseKeys: {JSON.stringify(debugInfo?.responseKeys || [])}
-          </TextBlock>
-          <TextBlock>
-            serverDebug: {JSON.stringify(debugInfo?.serverDebug || null)}
-          </TextBlock>
+          {debugInfo?.fetch?.jsonError ? <TextBlock>jsonError: {debugInfo.fetch.jsonError}</TextBlock> : null}
+          <TextBlock>responseKeys: {JSON.stringify(debugInfo?.responseKeys || [])}</TextBlock>
+          <TextBlock>serverDebug: {JSON.stringify(debugInfo?.serverDebug || null)}</TextBlock>
         </TextContainer>
       </BlockStack>
     </View>

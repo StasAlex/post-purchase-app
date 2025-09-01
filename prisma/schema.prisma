@@ -20,7 +20,7 @@ model Session {
   state         String
   isOnline      Boolean
   scope         String?
-  expires       DateTime? @map("expiresAt")
+  expires       DateTime?   // <— колонка "expires" в БД
 
   accessToken   String?
   userId        BigInt?
@@ -32,11 +32,11 @@ model Session {
   collaborator  Boolean   @default(false)
   emailVerified Boolean   @default(false)
 
-  createdAt     DateTime  @default(now()) @map("created")
-  updatedAt     DateTime  @updatedAt      @map("updated")
+  createdAt     DateTime  @default(now())   // <— колонка "createdAt"
+  updatedAt     DateTime  @updatedAt        // <— колонка "updatedAt"
 
   @@index([shop])
-  @@map("Session")
+  @@map("Session") // имя таблицы в БД
 }
 
 

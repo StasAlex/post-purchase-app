@@ -180,6 +180,7 @@ export function App({ storage, inputData, applyChangeset, done }) {
     console.log('changes', changes);
 
     try {
+      console.log('token', token)
       const res = await fetch(`${APP_URL}/api/postpurchase/sign`, {
         method: "POST",
         headers: {

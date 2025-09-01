@@ -3,94 +3,32 @@ import { json } from "@remix-run/node";
 
 /**
  * POST /api/postpurchase/sign
- * Headers: Authorization: Bearer <buyerToken>
+ * Headers: Authorization: Bearer <inputData.token>
  * Body: { shop: string, referenceId: string, changes: Array, checkoutOrigin?: string }
  * Returns: { changeset: string }
- *
- * Эта версия:
- *  - жёстко проверяет Origin по allow-list (checkout.shopify.com, домен магазина, APP_URL и т.д.)
- *  - принимает changes как snake_case и camelCase (авто-конверт в snake_case)
- *  - корректно ставит CORS-заголовки и отвечает на OPTIONS
- *  - подробнее логически оформляет ошибки от Shopify
  */
-
-/* =========================  ORIGIN allow-list  ========================= */
-
-const EXTRA_ALLOWED = (process.env.ALLOWED_ORIGINS || "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
-
-console.log(EXTRA_ALLOWED);
-
-/** host из строки/URL */
-function hostOf(u = "") {
-  try {
-    const url = new URL(u);
-    return url.host.toLowerCase();
-  } catch {
-    return String(u || "").replace(/^https?:\/\//, "").replace(/\/+$/, "").toLowerCase();
-  }
-}
-
-/** нормализует shop в полный https URL */
-function normalizeShopUrl(shop = "") {
-  const s = String(shop || "").trim();
-  if (!s) return "";
-  return /^https?:\/\//i.test(s) ? s : `https://${s}`;
-}
-
-function isAllowedOrigin({ origin, shop, checkoutOrigin }) {
-  const originHost = hostOf(origin);
-
-  const appHost = hostOf(process.env.APP_URL || "");
-  const shopHost = hostOf(normalizeShopUrl(shop));
-  const coHost = hostOf(checkoutOrigin);
-
-  const candidates = [
-    "checkout.shopify.com", // основной чек-аут
-    shopHost,               // домен магазина (myshopify или кастомный)
-    appHost,                // домен нашего приложения (Vercel)
-    coHost,                 // тот, что пришёл в body как checkoutOrigin
-    ...EXTRA_ALLOWED.map(hostOf),
-  ].filter(Boolean);
-
-  // локально разрешаем localhost
-  if (process.env.NODE_ENV !== "production") {
-    candidates.push("localhost:3000", "127.0.0.1:3000");
-  }
-
-  // Нет Origin (серверный вызов) — пропускаем
-  if (!originHost) return true;
-
-  return candidates.includes(originHost);
-}
-
-/* =========================  HANDLERS  ========================= */
-
 export async function action({ request }) {
   if (request.method !== "POST") {
     return json({ error: "method_not_allowed" }, { status: 405, headers: corsHeaders(request) });
   }
 
+  // --- CORS/Origin guard (сервер → принимаем только белый список) ---
+  const reqOrigin = request.headers.get("origin") || "";
+  const allowed = (process.env.SHOPIFY_ALLOWED_ORIGINS ||
+    "https://checkout.shopify.com,https://pay.shopify.com")
+    .split(",").map(s => s.trim()).filter(Boolean);
+
+  if (!allowed.includes(reqOrigin)) {
+    return json({ error: "forbidden_origin", origin: reqOrigin, allowed }, {
+      status: 403, headers: corsHeaders(request),
+    });
+  }
+
   try {
-    // читаем body РАНЬШЕ, чтобы знать shop/checkoutOrigin для проверки Origin
-    const { shop, referenceId, changes, checkoutOrigin } = await safeJson(request);
-
-    const reqOrigin =
-      request.headers.get("origin") || request.headers.get("Origin") || "";
-    if (!isAllowedOrigin({ origin: reqOrigin, shop, checkoutOrigin })) {
-      return json(
-        { error: "forbidden_origin", origin: reqOrigin, shop, checkoutOrigin },
-        { status: 403, headers: corsHeaders(request) },
-      );
-    }
-
-    const auth =
-      request.headers.get("authorization") ||
-      request.headers.get("Authorization") ||
-      "";
+    const auth = request.headers.get("authorization") || request.headers.get("Authorization") || "";
     const buyerToken = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+
+    const { shop, referenceId, changes, checkoutOrigin } = await safeJson(request);
 
     if (!buyerToken) {
       return json({ error: "missing_bearer_token" }, { status: 401, headers: corsHeaders(request) });
@@ -107,7 +45,8 @@ export async function action({ request }) {
       referenceId,
       buyerToken,
       changes,
-      checkoutOrigin,
+      // отдаём наверх ровно тот Origin, с которого пришёл UI (и который мы только что пропустили)
+      checkoutOrigin: checkoutOrigin || reqOrigin,
     });
 
     if (!result.ok) {
@@ -120,11 +59,9 @@ export async function action({ request }) {
           tried: result.tried,
           cause: result.cause ?? null,
           requestId: result.requestId ?? null,
+          responseHeaders: result.responseHeaders ?? null,
         },
-        {
-          status: result.status && result.status >= 400 ? result.status : 502,
-          headers: corsHeaders(request),
-        },
+        { status: result.status && result.status >= 400 ? result.status : 502, headers: corsHeaders(request) },
       );
     }
 
@@ -152,12 +89,12 @@ export async function loader({ request }) {
   return new Response("OK", { status: 200, headers: corsHeaders(request) });
 }
 
-/* =========================  HELPERS  ========================= */
+/* ------------ helpers ------------ */
 
 async function fetchShopifyCalculate({ shop, referenceId, buyerToken, changes, checkoutOrigin }) {
   const tried = [];
 
-  // приводим входные изменения к snake_case (и вытягиваем numeric variant_id)
+  // 1) нормализуем changes → snake_case
   const snakeChanges = (Array.isArray(changes) ? changes : []).map((c) => {
     if (!c || typeof c !== "object") return c;
     if (c.type === "add_variant") {
@@ -170,13 +107,11 @@ async function fetchShopifyCalculate({ shop, referenceId, buyerToken, changes, c
     return c;
   });
 
-  const shopUrl = normalizeShopUrl(shop);
-
-  // порядок важен — Shopify чаще принимает первый вариант
+  // 2) откуда дергать Shopify: checkout.shopify.com → явный origin → домен магазина (на самый край)
   const origins = [
     "https://checkout.shopify.com",
     stripSlash(checkoutOrigin || ""),
-    stripSlash(shopUrl),
+    `https://${stripSlash(shop)}`,
   ].filter(Boolean);
 
   const buildHeaders = (originHost) => ({
@@ -184,9 +119,12 @@ async function fetchShopifyCalculate({ shop, referenceId, buyerToken, changes, c
     accept: "application/json",
     authorization: `Bearer ${buyerToken}`,
     "cache-control": "no-store",
+    // имитируем реальный источник
     Origin: originHost,
     Referer: `${originHost}/checkouts/${encodeURIComponent(referenceId)}`,
     "Shopify-Checkout-Reference-Id": referenceId,
+    // мелкие «подсказки» для некоторых прокси
+    "X-Requested-With": "XMLHttpRequest",
     "User-Agent": "PostPurchase-Calc/1.0 (+remix)",
   });
 
@@ -212,7 +150,12 @@ async function fetchShopifyCalculate({ shop, referenceId, buyerToken, changes, c
 
       const okJson = res.ok && data && typeof data === "object";
       const requestId = res.headers.get("x-request-id") || null;
-      return { ok: okJson, status: res.status, raw: text, data, contentType, requestId };
+
+      // соберём все заголовки для диагностики
+      const responseHeaders = {};
+      for (const [k, v] of res.headers) responseHeaders[k] = v;
+
+      return { ok: okJson, status: res.status, raw: text, data, contentType, requestId, responseHeaders };
     } finally {
       clearTimeout(t);
     }
@@ -223,6 +166,7 @@ async function fetchShopifyCalculate({ shop, referenceId, buyerToken, changes, c
       const originHost = stripSlash(origin);
       const headers = buildHeaders(originHost);
 
+      // список путей: stable → unstable, с .json и без, и fallback с ref в теле
       const paths = [
         `/checkouts/${encodeURIComponent(referenceId)}/changesets/calculate.json`,
         `/checkouts/${encodeURIComponent(referenceId)}/changesets/calculate`,
@@ -242,6 +186,8 @@ async function fetchShopifyCalculate({ shop, referenceId, buyerToken, changes, c
 
         const r = await doFetch(url, headers, body);
         if (r.ok) return { ok: true, ...r, tried };
+
+        // если это не 404 — дальше смысла перебирать мало, вернём как есть
         if (r.status !== 404) return { ok: false, ...r, tried, error: decodeError(r) };
       }
     }
@@ -264,7 +210,7 @@ function decodeError(r) {
   if (r.status === 302 || String(r.raw || "").includes("/password")) return "redirected_to_password";
   if (r.status === 401) return "unauthorized_buyer_token";
   if (r.status === 403) return "forbidden";
-  if (r.status === 404) return "not_found";
+  if (r.status === 422) return "unprocessable_entity";
   if (r.status === 500) return "shopify_internal_error";
   return "shopify_calculate_failed";
 }
@@ -295,9 +241,5 @@ function corsHeaders(request) {
 }
 
 async function safeJson(request) {
-  try {
-    return await request.json();
-  } catch {
-    return {};
-  }
+  try { return await request.json(); } catch { return {}; }
 }

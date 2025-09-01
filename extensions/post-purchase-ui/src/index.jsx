@@ -147,6 +147,8 @@ export function App({ storage, inputData, applyChangeset, done }) {
 
   const token = inputData?.token || null;
 
+  console.log(token);
+
   // Если открыто с превью темы — не пытаемся добавлять в заказ (Shopify блокирует)
   const isPreviewCheckout = typeof location?.search === "string" && /(?:^|[?&])preview_theme_id=/.test(location.search);
   const checkoutOrigin = "https://checkout.shopify.com";

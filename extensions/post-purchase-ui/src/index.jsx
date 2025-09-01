@@ -147,7 +147,7 @@ export function App({ storage, inputData, applyChangeset, done }) {
 
   const token = inputData?.token || null;
 
-  console.log(token);
+  console.log('token', token);
 
   // Если открыто с превью темы — не пытаемся добавлять в заказ (Shopify блокирует)
   const isPreviewCheckout = typeof location?.search === "string" && /(?:^|[?&])preview_theme_id=/.test(location.search);
@@ -177,7 +177,7 @@ export function App({ storage, inputData, applyChangeset, done }) {
     // ⚠️ snake_case — variant_id
     const changes = [{ type: "add_variant", variant_id: vid, quantity: 1 }];
 
-    console.log(changes);
+    console.log('changes', changes);
 
     try {
       const res = await fetch(`${APP_URL}/api/postpurchase/sign`, {

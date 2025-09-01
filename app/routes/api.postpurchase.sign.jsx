@@ -21,6 +21,8 @@ const EXTRA_ALLOWED = (process.env.ALLOWED_ORIGINS || "")
   .map((s) => s.trim())
   .filter(Boolean);
 
+console.log(EXTRA_ALLOWED);
+
 /** host из строки/URL */
 function hostOf(u = "") {
   try {

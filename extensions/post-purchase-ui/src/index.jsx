@@ -151,7 +151,8 @@ export function App({ storage, inputData, applyChangeset, done }) {
 
   // Если открыто с превью темы — не пытаемся добавлять в заказ (Shopify блокирует)
   const isPreviewCheckout = typeof location?.search === "string" && /(?:^|[?&])preview_theme_id=/.test(location.search);
-  const checkoutOrigin = "https://checkout.shopify.com";
+  const checkoutOrigin =
+    inputData?.hop?.origin || inputData?.origin || "https://checkout.shopify.com";
 
   async function addVariantToOrder(variantIdRaw) {
     const vid =

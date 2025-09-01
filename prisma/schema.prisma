@@ -20,7 +20,7 @@ model Session {
   state       String?
   isOnline    Boolean  @default(false)
   scope       String?
-  expiresAt   DateTime?
+  expires   DateTime?
   accessToken String?
   userId      BigInt?
 

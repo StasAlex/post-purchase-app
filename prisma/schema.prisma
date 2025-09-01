@@ -32,8 +32,8 @@ model Session {
   collaborator  Boolean   @default(false)
   emailVerified Boolean   @default(false)
 
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  createdAt     DateTime  @default(now()) @map("created")
+  updatedAt     DateTime  @updatedAt      @map("updated")
 
   @@index([shop])
   @@map("Session")

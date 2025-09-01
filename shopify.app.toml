@@ -26,8 +26,7 @@ api_version = "2025-07"
 scopes = "write_products,read_products,read_checkouts,write_checkouts,read_orders,write_orders"
 
 [auth]
-redirect_urls = ["https://post-purchase-app.vercel.app/auth/callback",
-                   "https://post-purchase-app.vercel.app/api/auth/callback"]
+redirect_urls = ["https://post-purchase-app.vercel.app/auth/callback", "https://post-purchase-app.vercel.app/auth/shopify/callback", "https://post-purchase-app.vercel.app/api/auth/callback"]
 
 [pos]
 embedded = false

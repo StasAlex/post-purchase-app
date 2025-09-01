@@ -15,16 +15,28 @@ datasource db {
 }
 
 model Session {
-  id          String   @id
-  shop        String
-  state       String?
-  isOnline    Boolean  @default(false)
-  scope       String?
-  expires   DateTime?
-  accessToken String?
-  userId      BigInt?
+  id            String   @id
+  shop          String
+  state         String
+  isOnline      Boolean
+  scope         String?
+  expires       DateTime? @map("expiresAt")
+
+  accessToken   String?
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean   @default(false)
+  emailVerified Boolean   @default(false)
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   @@index([shop])
+  @@map("Session")
 }
 
 

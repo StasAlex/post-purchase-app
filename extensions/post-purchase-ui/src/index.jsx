@@ -1,4 +1,5 @@
 /* eslint-disable no-console */
+import React, { useState } from "react";
 import {
   extend,
   render,
@@ -70,10 +71,15 @@ extend("Checkout::PostPurchase::ShouldRender", async ({ storage, inputData }) =>
     inputData?.initialPurchase?.id ||
     null;
 
+  const origin =
+    inputData?.hop?.origin ||
+    inputData?.origin ||
+    null;
+
   const productGids = uniq(lineItems.flatMap(extractProductGidsFromLineItem));
 
   let offers = [];
-  const debug = { shop, lineItemsCount: lineItems.length, productGids, fetch: {} };
+  const debug = { shop, lineItemsCount: lineItems.length, productGids, fetch: {}, origin };
 
   if (APP_URL && shop && productGids.length) {
     try {
@@ -110,7 +116,7 @@ extend("Checkout::PostPurchase::ShouldRender", async ({ storage, inputData }) =>
     }
   }
 
-  await storage.update({ offers, debugInfo: debug, meta: { shop, referenceId } });
+  await storage.update({ offers, debugInfo: debug, meta: { shop, referenceId, origin } });
   return { render: offers.length > 0 };
 });
 
@@ -120,10 +126,13 @@ extend("Checkout::PostPurchase::ShouldRender", async ({ storage, inputData }) =>
 render("Checkout::PostPurchase::Render", App);
 
 export function App({ storage, inputData, applyChangeset, done }) {
-  const initial = storage?.initialData || {};
-  const offers = Array.isArray(initial.offers) ? initial.offers : [];
+  const initial   = storage?.initialData || {};
+  const offers    = Array.isArray(initial.offers) ? initial.offers : [];
   const debugInfo = initial.debugInfo || {};
-  const meta = initial.meta || {};
+  const meta      = initial.meta || {};
+
+  const [serverProbe, setServerProbe] = useState(null); // DEBUG only
+  const [clientProbe, setClientProbe] = useState(null); // DEBUG only
 
   const CONTAINER_MAX = 1200;
   const CARD_MIN = 220;
@@ -147,12 +156,28 @@ export function App({ storage, inputData, applyChangeset, done }) {
 
   const token = inputData?.token || null;
 
-  console.log('token', token);
-
-  // Если открыто с превью темы — не пытаемся добавлять в заказ (Shopify блокирует)
-  const isPreviewCheckout = typeof location?.search === "string" && /(?:^|[?&])preview_theme_id=/.test(location.search);
+  // origin для подписи и для дебага
   const checkoutOrigin =
-    inputData?.hop?.origin || inputData?.origin || "https://checkout.shopify.com";
+    meta.origin ||
+    inputData?.hop?.origin ||
+    inputData?.origin ||
+    "https://checkout.shopify.com";
+
+  // Не даём добавлять в превью темы
+  const isPreviewCheckout =
+    (typeof location?.search === "string" && /(?:^|[?&])preview_theme_id=/.test(location.search)) ||
+    /[?&]preview_theme_id=/.test(String(inputData?.referrer || ""));
+
+  console.log("[PP] ctx", {
+    shop,
+    referenceId,
+    tokenLen: token?.length,
+    tokenHead: token?.slice(0, 4),
+    checkoutOrigin,
+    isPreviewCheckout,
+    canApply,
+    hasAppUrl: !!APP_URL,
+  });
 
   async function addVariantToOrder(variantIdRaw) {
     const vid =
@@ -175,31 +200,29 @@ export function App({ storage, inputData, applyChangeset, done }) {
       return;
     }
 
-    // ⚠️ snake_case — variant_id
+    // snake_case как требует calculate
     const changes = [{ type: "add_variant", variant_id: vid, quantity: 1 }];
 
-    console.log('changes', changes);
-
     try {
-      console.log('token', token)
       const res = await fetch(`${APP_URL}/api/postpurchase/sign`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          authorization: `Bearer ${token}`,
+          authorization: `Bearer ${token}`, // Buyer token из inputData
         },
         body: JSON.stringify({ shop, referenceId, changes, checkoutOrigin }),
       });
 
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) {
-        debugger
+        setServerProbe({ when: Date.now(), status: res.status, payload });
         console.error("[PP] sign failed", payload);
         return;
       }
 
       const changeset = payload?.changeset;
       if (!changeset) {
+        setServerProbe({ when: Date.now(), status: 200, payload: { error: "no_changeset_token_in_response" } });
         console.error("[PP] no changeset token from server", payload);
         return;
       }
@@ -213,7 +236,30 @@ export function App({ storage, inputData, applyChangeset, done }) {
       console.log("[PP] applyChangeset →", result);
       if (result?.status === "ACCEPTED" && typeof done === "function") await done();
     } catch (e) {
+      setServerProbe({ when: Date.now(), error: String(e?.message || e) });
       console.error("[PP] addVariantToOrder error:", e);
+    }
+  }
+
+  // --- DEBUG only: прямой вызов calculate с клиента (чтобы понять, падает ли апстрим сам по себе)
+  async function probeClientCalculate(vid) {
+    try {
+      const res = await fetch(`/checkouts/${referenceId}/changesets/calculate.json`, {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ changes: [{ type: "add_variant", variant_id: vid, quantity: 1 }] }),
+      });
+      const text = await res.text();
+      let data = null;
+      try { data = JSON.parse(text); } catch {}
+      setClientProbe({ when: Date.now(), status: res.status, data, raw: text.slice(0, 400) });
+      console.log("[PP] client calc →", res.status, data || text);
+    } catch (e) {
+      setClientProbe({ when: Date.now(), error: String(e?.message || e) });
     }
   }
 
@@ -242,20 +288,39 @@ export function App({ storage, inputData, applyChangeset, done }) {
         <Tiles maxPerLine={5} spacing="base" align="center">
           {offers.map((offer, i) => (
             <View key={offer.id || i} minInlineSize={CARD_MIN} maxInlineSize={CARD_MAX} padding="base">
-              <OfferCard offer={offer} onAdd={() => addVariantToOrder(offer?.variantId)} disabled={isPreviewCheckout || !canApply} />
+              <OfferCard
+                offer={offer}
+                onAdd={() => addVariantToOrder(offer?.variantId)}
+                onProbeClient={() => probeClientCalculate(offer?.variantId)}
+                disabled={isPreviewCheckout || !canApply || !token}
+              />
             </View>
           ))}
         </Tiles>
       </View>
 
       {(DEBUG || offers.length === 0) ? (
-        <DebugPanel debugInfo={debugInfo} offersCount={offers.length} />
+        <DebugPanel
+          debugInfo={debugInfo}
+          offersCount={offers.length}
+          extra={{
+            referenceId,
+            checkoutOrigin,
+            canApply,
+            isPreviewCheckout,
+            hasAppUrl: !!APP_URL,
+            tokenLen: token?.length || 0,
+            tokenHead: token?.slice(0, 6) || "",
+            serverProbe,
+            clientProbe,
+          }}
+        />
       ) : null}
     </BlockStack>
   );
 }
 
-function OfferCard({ offer, onAdd, disabled }) {
+function OfferCard({ offer, onAdd, onProbeClient, disabled }) {
   const img = offer?.image || PLACEHOLDER;
   const title = offer?.title || "Product";
   const price = offer?.price || null;
@@ -271,28 +336,55 @@ function OfferCard({ offer, onAdd, disabled }) {
         <Button disabled={disabled} onPress={onAdd}>
           Add to order
         </Button>
+        {DEBUG ? (
+          <Button kind="secondary" onPress={onProbeClient} disabled={!offer?.variantId}>
+            Calc (client) {/* DEBUG only */}
+          </Button>
+        ) : null}
       </BlockStack>
     </View>
   );
 }
 
-function DebugPanel({ debugInfo, offersCount }) {
+function DebugPanel({ debugInfo, offersCount, extra = {} }) {
+  const sx = (v) => (v == null ? "-" : String(v));
+
   return (
     <View>
       <BlockStack spacing="tight">
         <TextContainer>
           <Heading>Debug</Heading>
+
           <TextBlock>offersCount: {offersCount}</TextBlock>
           <TextBlock>shop: {debugInfo?.shop || "-"}</TextBlock>
+          <TextBlock>origin: {debugInfo?.origin || extra.checkoutOrigin || "-"}</TextBlock>
           <TextBlock>lineItemsCount: {String(debugInfo?.lineItemsCount ?? 0)}</TextBlock>
           <TextBlock>productGids: {JSON.stringify(debugInfo?.productGids || [])}</TextBlock>
+
           <TextBlock>
-            fetch: ok={String(debugInfo?.fetch?.ok)} status={String(debugInfo?.fetch?.status)} err=
-            {debugInfo?.fetch?.error || "none"}
+            flags: canApply={String(extra.canApply)} preview={String(extra.isPreviewCheckout)} hasAPP_URL={String(extra.hasAppUrl)}
+          </TextBlock>
+          <TextBlock>
+            referenceId: {sx(extra.referenceId)} | tokenLen: {sx(extra.tokenLen)} | tokenHead: {sx(extra.tokenHead)}
+          </TextBlock>
+
+          <TextBlock>
+            fetch: ok={String(debugInfo?.fetch?.ok)} status={String(debugInfo?.fetch?.status)} err={debugInfo?.fetch?.error || "none"}
           </TextBlock>
           {debugInfo?.fetch?.jsonError ? <TextBlock>jsonError: {debugInfo.fetch.jsonError}</TextBlock> : null}
           <TextBlock>responseKeys: {JSON.stringify(debugInfo?.responseKeys || [])}</TextBlock>
           <TextBlock>serverDebug: {JSON.stringify(debugInfo?.serverDebug || null)}</TextBlock>
+
+          {extra.serverProbe ? (
+            <TextBlock>
+              serverProbe: {JSON.stringify(extra.serverProbe)}
+            </TextBlock>
+          ) : null}
+          {extra.clientProbe ? (
+            <TextBlock>
+              clientProbe: {JSON.stringify(extra.clientProbe)}
+            </TextBlock>
+          ) : null}
         </TextContainer>
       </BlockStack>
     </View>

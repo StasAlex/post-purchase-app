@@ -1,6 +1,11 @@
 // app/routes/api.postpurchase.sign.jsx
 import { json } from "@remix-run/node";
 
+
+function isFromCheckout(origin) {
+  return /^https:\/\/checkout\.shopify\.com/.test(origin || "");
+}
+
 /**
  * POST /api/postpurchase/sign
  * Headers: Authorization: Bearer <inputData.token>
@@ -15,6 +20,11 @@ export async function action({ request }) {
   try {
     const auth = request.headers.get("authorization") || request.headers.get("Authorization") || "";
     const buyerToken = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    const origin = request.headers.get("origin") || "";
+
+    if (!isFromCheckout(origin)) {
+      return json({ error: "forbidden_origin" }, { status: 403, headers: corsHeaders(request) });
+    }
 
     const { shop, referenceId, changes, checkoutOrigin } = await safeJson(request);
 

@@ -175,6 +175,8 @@ export function App({ storage, inputData, applyChangeset, done }) {
     // ⚠️ snake_case — variant_id
     const changes = [{ type: "add_variant", variant_id: vid, quantity: 1 }];
 
+    console.log(changes);
+
     try {
       const res = await fetch(`${APP_URL}/api/postpurchase/sign`, {
         method: "POST",

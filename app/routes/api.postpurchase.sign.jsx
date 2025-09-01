@@ -12,7 +12,7 @@ export async function action({ request }) {
     return json({ error: "method_not_allowed" }, { status: 405, headers: corsHeaders(request) });
   }
 
-  // --- CORS / Origin guard ---
+  // ---- CORS / Origin guard ----
   const reqOrigin = request.headers.get("origin") || "";
   const DEFAULT_ALLOWED = [
     "https://checkout.shopify.com",
@@ -24,7 +24,6 @@ export async function action({ request }) {
       .split(",").map(s => s.trim()).filter(Boolean),
     ...DEFAULT_ALLOWED,
   ];
-
   if (!allowed.includes(reqOrigin)) {
     return json({ error: "forbidden_origin", origin: reqOrigin, allowed }, {
       status: 403, headers: corsHeaders(request),
@@ -47,7 +46,7 @@ export async function action({ request }) {
       );
     }
 
-    // Если пришли с CDN, для апстрима притворяемся checkout.shopify.com
+    // Если прилетели с CDN — апстриму всегда говорим, что пришли с checkout/pay
     const upstreamOrigin = canonicalizeCheckoutOrigin(checkoutOrigin || reqOrigin);
 
     const result = await fetchShopifyCalculate({
@@ -102,9 +101,11 @@ function canonicalizeCheckoutOrigin(origin) {
   if (!origin) return "https://checkout.shopify.com";
   try {
     const u = new URL(origin);
+    // если пришло с CDN — подменяем на checkout
     if (u.hostname === "cdn.shopify.com" || u.hostname.endsWith(".shopifycdn.com")) {
       return "https://checkout.shopify.com";
     }
+    // нормализуем до протокола+хоста
     return `${u.protocol}//${u.hostname}`;
   } catch {
     return "https://checkout.shopify.com";
@@ -114,7 +115,7 @@ function canonicalizeCheckoutOrigin(origin) {
 async function fetchShopifyCalculate({ shop, referenceId, buyerToken, changes, checkoutOrigin }) {
   const tried = [];
 
-  // Нормализуем changes → snake_case
+  // → snake_case для тела
   const snakeChanges = (Array.isArray(changes) ? changes : []).map((c) => {
     if (!c || typeof c !== "object") return c;
     if (c.type === "add_variant") {
@@ -127,11 +128,12 @@ async function fetchShopifyCalculate({ shop, referenceId, buyerToken, changes, c
     return c;
   });
 
-  // Порядок попыток
+  // порядок попыток (pay → checkout → shop)
   const origins = [
+    "https://pay.shopify.com",
     "https://checkout.shopify.com",
-    stripSlash(checkoutOrigin || ""),
-    `https://${stripSlash(shop)}`,
+    stripSlash(checkoutOrigin || ""),     // если вдруг пришло иное валидное
+    `https://${stripSlash(shop)}`,        // shop domain как последний шанс
   ].filter(Boolean);
 
   const buildHeaders = (originHost) => ({

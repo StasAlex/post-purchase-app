@@ -191,6 +191,7 @@ export function App({ storage, inputData, applyChangeset, done }) {
 
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) {
+        debugger
         console.error("[PP] sign failed", payload);
         return;
       }

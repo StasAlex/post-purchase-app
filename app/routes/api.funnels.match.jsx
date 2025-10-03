@@ -291,8 +291,61 @@ export async function loader({ request }) {
 
   const dbgInput = { shop, gidsRaw, productGids };
 
-  if (!shop || productGids.length === 0) {
-    return json({ offers: [], debug: { ...dbgInput, reason: "no-shop-or-gids" } }, { headers: corsHeaders() });
+  if (!shop) {
+    // Попробуем угадать магазин: берём самый свежий активный funnel
+    const latest = await prisma.funnel.findFirst({
+      where: { active: true },
+      orderBy: { updatedAt: 'desc' },
+      select: { shopDomain: true, id: true },
+    });
+    if (latest?.shopDomain) {
+      const guessed = latest.shopDomain;
+      dbgInput.shop = guessed;
+      // продолжаем как будто shop пришёл
+      const { enriched, debug } = await matchOffers(guessed, productGids);
+      return json({ offers: enriched, debug: { ...dbgInput, guessedFrom: 'latest-active-funnel', ...debug } }, { headers: corsHeaders() });
+    }
+    return json({ offers: [], debug: { ...dbgInput, reason: "no-shop" } }, { headers: corsHeaders() });
+  }
+
+  // Если gids пусты (превью/тест без линий) — попробуем подобрать первый активный фалбек-фаннел
+  // для магазина и вернуть его офферы, чтобы было что показать в UI
+  if (productGids.length === 0) {
+    const funnel = await prisma.funnel.findFirst({
+      where: { shopDomain: shop, active: true },
+      include: { offers: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    const offerIds = Array.from(
+      new Set((funnel?.offers ?? []).map((o) => toProductGid(o.productGid)).filter(Boolean))
+    );
+
+    const { session, debug: sessDbg } = await getOfflineSession(shop);
+    let byId = {};
+    let fetchDbg = null;
+    if (session) {
+      const res = await fetchProductsMetaGraphQLHTTP(session, offerIds);
+      byId = res.byId; fetchDbg = res.debug;
+      if (!Object.keys(byId).length) {
+        const r2 = await fetchProductsMetaREST(session, offerIds);
+        byId = r2.byId; fetchDbg = r2.debug;
+      }
+    }
+
+    const enriched = offerIds.map((id) => ({
+      id,
+      title: byId[id]?.title || null,
+      image: byId[id]?.image || null,
+      variantId: byId[id]?.variantId || null,
+      price: byId[id]?.price || null,
+      priceAmount: byId[id]?.priceAmount ?? null,
+      currencyCode: byId[id]?.currencyCode ?? null,
+    }));
+
+    return json({
+      offers: enriched,
+      debug: { ...dbgInput, reason: 'fallback-no-gids', funnelId: funnel?.id || null, admin: sessDbg, fetchDbg }
+    }, { headers: corsHeaders() });
   }
 
   const { enriched, debug } = await matchOffers(shop, productGids);

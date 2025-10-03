@@ -14,7 +14,7 @@ import {
   Tiles,
 } from "@shopify/post-purchase-ui-extensions-react";
 
-const APP_URL = process.env.APP_URL;
+const APP_URL = process.env.APP_URL || process.env.SHOPIFY_APP_URL || globalThis.APP_URL || "";
 if (!APP_URL) console.warn("[PP] APP_URL is not set. Put APP_URL in .env");
 
 const PLACEHOLDER = "https://cdn.shopify.com/static/images/examples/img-placeholder-1120x1120.png";
@@ -22,6 +22,18 @@ const DEBUG = true;
 
 const CURRENCY_SYMBOL = { UAH: "₴", USD: "$", EUR: "€", GBP: "£", CAD: "CA$", AUD: "A$", PLN: "zł", JPY: "¥" };
 const uniq = (arr) => Array.from(new Set(arr || []));
+
+function fallbackShopDomain() {
+  return (
+    process.env.PREVIEW_SHOP ||
+    process.env.SHOPIFY_SHOP_DOMAIN ||
+    process.env.SHOP ||
+    process.env.DEV_SHOP ||
+    process.env.SHOPIFY_SHOP ||
+    globalThis.POST_PURCHASE_SHOP ||
+    null
+  );
+}
 
 const hardPrice = (amount, code) =>
   amount == null || !code ? null : `${CURRENCY_SYMBOL[code] || code}${Number(amount).toFixed(2)}`;
@@ -63,6 +75,7 @@ extend("Checkout::PostPurchase::ShouldRender", async ({ storage, inputData }) =>
     inputData?.shop?.myshopifyDomain ||
     inputData?.shopDomain ||
     inputData?.shop?.domain ||
+    fallbackShopDomain() ||
     "";
 
   const referenceId =
@@ -81,10 +94,11 @@ extend("Checkout::PostPurchase::ShouldRender", async ({ storage, inputData }) =>
   let offers = [];
   const debug = { shop, lineItemsCount: lineItems.length, productGids, fetch: {}, origin };
 
-  if (APP_URL && shop && productGids.length) {
+  // Даже если productGids пусты (превью), попробуем дернуть сервер — там есть фолбэк
+  if (APP_URL && shop) {
     try {
       const url = `${APP_URL}/api/funnels/match?shop=${encodeURIComponent(shop)}&gids=${encodeURIComponent(
-        productGids.join(","),
+        (productGids || []).join(","),
       )}`;
       const res = await fetch(url, { cache: "no-store", credentials: "omit" });
       debug.fetch.ok = res.ok;
@@ -117,13 +131,14 @@ extend("Checkout::PostPurchase::ShouldRender", async ({ storage, inputData }) =>
   }
 
   await storage.update({ offers, debugInfo: debug, meta: { shop, referenceId, origin } });
-  return { render: offers.length > 0 };
+  return { render: offers.length > 0 || DEBUG };
 });
 
 /* =========================
    Render
 ========================= */
-render("Checkout::PostPurchase::Render", App);
+// Важно: оборачиваем в компонент, чтобы избежать Invalid hook call
+render("Checkout::PostPurchase::Render", () => <App />);
 
 export function App({ storage, inputData, applyChangeset, done }) {
   const initial   = storage?.initialData || {};
@@ -152,6 +167,7 @@ export function App({ storage, inputData, applyChangeset, done }) {
     inputData?.shop?.myshopifyDomain ||
     inputData?.shopDomain ||
     (inputData?.shop?.domain?.endsWith(".myshopify.com") ? inputData.shop.domain : null) ||
+    fallbackShopDomain() ||
     null;
 
   const token = inputData?.token || null;
@@ -163,10 +179,8 @@ export function App({ storage, inputData, applyChangeset, done }) {
     inputData?.origin ||
     "https://checkout.shopify.com";
 
-  // Не даём добавлять в превью темы
-  const isPreviewCheckout =
-    (typeof location?.search === "string" && /(?:^|[?&])preview_theme_id=/.test(location.search)) ||
-    /[?&]preview_theme_id=/.test(String(inputData?.referrer || ""));
+  // ⚠️ Форсим: считаем, что превью-режим не ограничивает нас
+  const isPreviewCheckout = false;
 
   console.log("[PP] ctx", {
     shop,
@@ -193,10 +207,6 @@ export function App({ storage, inputData, applyChangeset, done }) {
     }
     if (!token || !referenceId || !shop) {
       console.warn("[PP] Missing token/referenceId/shop in inputData", { hasToken: !!token, referenceId, shop });
-      return;
-    }
-    if (isPreviewCheckout) {
-      console.warn("[PP] Theme preview is active — changesets are disabled by Shopify.");
       return;
     }
 
@@ -228,7 +238,7 @@ export function App({ storage, inputData, applyChangeset, done }) {
       }
 
       if (!canApply) {
-        console.warn("[PP] applyChangeset not available in preview");
+        console.warn("[PP] applyChangeset not available (likely preview). Signed ok, skipping apply.");
         return;
       }
 
@@ -271,19 +281,6 @@ export function App({ storage, inputData, applyChangeset, done }) {
         </CalloutBanner>
       )}
 
-      {isPreviewCheckout && (
-        <CalloutBanner title="Theme preview mode" status="warning">
-          This is a checkout theme preview. Adding items to the order is disabled by Shopify in preview.
-          Place a test order (no preview_theme_id) to test the upsell.
-        </CalloutBanner>
-      )}
-
-      {!isPreviewCheckout && !canApply && (
-        <CalloutBanner title="Preview mode" status="info">
-          Adding to order is disabled in this preview. Place a test order to try.
-        </CalloutBanner>
-      )}
-
       <View inlineSize="fill" maxInlineSize={CONTAINER_MAX} padding="base">
         <Tiles maxPerLine={5} spacing="base" align="center">
           {offers.map((offer, i) => (
@@ -292,7 +289,7 @@ export function App({ storage, inputData, applyChangeset, done }) {
                 offer={offer}
                 onAdd={() => addVariantToOrder(offer?.variantId)}
                 onProbeClient={() => probeClientCalculate(offer?.variantId)}
-                disabled={isPreviewCheckout || !canApply || !token}
+                disabled={!token}
               />
             </View>
           ))}
@@ -337,7 +334,7 @@ function OfferCard({ offer, onAdd, onProbeClient, disabled }) {
           Add to order
         </Button>
         {DEBUG ? (
-          <Button kind="secondary" onPress={onProbeClient} disabled={!offer?.variantId}>
+          <Button kind="secondary" onPress={onProbeClient} disabled={!offer?.variantId || disabled}>
             Calc (client) {/* DEBUG only */}
           </Button>
         ) : null}

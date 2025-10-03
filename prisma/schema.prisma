@@ -1,82 +1,51 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
 
-// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
-// enough when changing adapters.
-// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
   provider  = "postgresql"
-  url  	    = env("DATABASE_URL")
+  url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
 }
 
 model Session {
-  id            String   @id
+  id            String    @id
   shop          String
   state         String
-  isOnline      Boolean
+  isOnline      Boolean   @default(false)
   scope         String?
-  expires       DateTime?   // <— колонка "expires" в БД
-
-  accessToken   String?
+  expires       DateTime?
+  accessToken   String
   userId        BigInt?
   firstName     String?
   lastName      String?
   email         String?
   accountOwner  Boolean   @default(false)
   locale        String?
-  collaborator  Boolean   @default(false)
-  emailVerified Boolean   @default(false)
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
 
-  createdAt     DateTime  @default(now())   // <— колонка "createdAt"
-  updatedAt     DateTime  @updatedAt        // <— колонка "updatedAt"
-
-  @@index([shop])
-  @@map("Session") // имя таблицы в БД
+  @@map("Session")
 }
 
-
-// --- Funnels / Analytics ---
 model Funnel {
-  id           String   @id @default(cuid())
-  shopDomain   String
-  name         String
-  discountPct  Int
-  active       Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  // ВАЖНО: тут на реальные модели Trigger/Offer
-  triggers     Trigger[]
-  offers       Offer[]
-}
-
-model Trigger {
   id          String   @id @default(cuid())
-  funnel      Funnel   @relation(fields: [funnelId], references: [id], onDelete: Cascade)
-  funnelId    String
+  shopDomain  String
+  name        String
+  discountPct Int
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  productGid  String
-  // здесь будем хранить выбранные варианы товара
-  variantGids Json?
+  // ↓ новые поля
+  triggerProductGid String
+  offerProductGid   String
 
-  @@index([funnelId])
-}
-
-model Offer {
-  id          String   @id @default(cuid())
-  funnel      Funnel   @relation(fields: [funnelId], references: [id], onDelete: Cascade)
-  funnelId    String
-
-  productGid  String
-  sort        Int      @default(0)
-  variantGids Json?
-
-  @@index([funnelId])
+  // один trigger — один funnel в рамках магазина
+  @@unique([shopDomain, triggerProductGid])
+  @@index([shopDomain])
 }
 
 model Event {
@@ -90,4 +59,3 @@ model Event {
   discountUsd Float    @default(0)
   createdAt   DateTime @default(now())
 }
-

@@ -36,6 +36,7 @@ export default function App() {
         <NavMenu>
           <Link to="/app" rel="home">Home</Link>
           <Link to="/app/funnels">Funnels</Link>
+          <Link to="/app/settings">Settings</Link>
         </NavMenu>
       )}
       <Outlet />

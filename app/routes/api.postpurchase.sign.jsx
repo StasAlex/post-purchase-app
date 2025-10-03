@@ -19,13 +19,36 @@ export async function action({ request }) {
     "https://pay.shopify.com",
     "https://cdn.shopify.com",
   ];
-  const allowed = [
+  const allowedList = [
     ...(process.env.SHOPIFY_ALLOWED_ORIGINS || "")
-      .split(",").map(s => s.trim()).filter(Boolean),
+      .split(",").map((s) => s.trim()).filter(Boolean),
     ...DEFAULT_ALLOWED,
   ];
-  if (!allowed.includes(reqOrigin)) {
-    return json({ error: "forbidden_origin", origin: reqOrigin, allowed }, {
+
+  const isOriginAllowed = (origin) => {
+    if (!origin) return true; // разрешаем отсутствие Origin (некоторые среды превью)
+    try {
+      const u = new URL(origin);
+      const host = u.hostname.toLowerCase();
+      // явные разрешённые урлы
+      if (allowedList.some((o) => {
+        try { return new URL(o).hostname.toLowerCase() === host; } catch { return false; }
+      })) return true;
+      // *.myshopify.com
+      if (host.endsWith(".myshopify.com")) return true;
+      // домен нашего приложения из окружения
+      const appUrl = process.env.SHOPIFY_APP_URL || process.env.APP_URL || "";
+      if (appUrl) {
+        try { if (new URL(appUrl).hostname.toLowerCase() === host) return true; } catch {}
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  };
+
+  if (!isOriginAllowed(reqOrigin)) {
+    return json({ error: "forbidden_origin", origin: reqOrigin, allowed: allowedList }, {
       status: 403, headers: corsHeaders(request),
     });
   }

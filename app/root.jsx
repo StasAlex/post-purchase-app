@@ -5,6 +5,9 @@ import {
   Scripts,
   ScrollRestoration,
 } from "@remix-run/react";
+import styles from './styles/polaris-overrides.css?url';
+export const links = () => [{ rel: 'stylesheet', href: styles }];
+
 
 export default function App() {
   return (
@@ -17,6 +20,7 @@ export default function App() {
           rel="stylesheet"
           href="https://cdn.shopify.com/static/fonts/inter/v4/styles.css"
         />
+
         <Meta />
         <Links />
       </head>

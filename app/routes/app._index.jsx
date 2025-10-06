@@ -3,7 +3,7 @@ import { json, redirect } from "@remix-run/node";
 import { useLoaderData, useNavigate, useLocation, useRevalidator } from "@remix-run/react";
 import {
   Page, Layout, Text, Card, BlockStack, Box, InlineStack,
-  IndexTable, Button, Badge, Pagination, Divider, Tooltip, Icon, Grid, LegacyCard
+  IndexTable, Button, Badge, Pagination, Divider, Tooltip, Icon, Grid, LegacyCard, DataTable
 } from "@shopify/polaris";
 import { InfoIcon } from '@shopify/polaris-icons';
 import { authenticate } from "../shopify.server";
@@ -60,7 +60,7 @@ export const loader = async ({ request }) => {
     orderBy,
     skip, take: pageSize,
     select: {
-      id: true, name: true, active: true, discountPct: true, createdAt: true,
+      id: true, name: true, discountPct: true, createdAt: true,
       triggerProductGid: true, offerProductGid: true,
     },
   });
@@ -83,7 +83,6 @@ export const loader = async ({ request }) => {
   const items = rows.map(r => ({
     id: r.id,
     name: r.name,
-    active: r.active,
     discountPct: r.discountPct,
     triggerTitle: titleById[r.triggerProductGid] || "—",
     offerTitle:   titleById[r.offerProductGid]   || "—",
@@ -111,6 +110,7 @@ export const loader = async ({ request }) => {
 export const action = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const form = await request.formData();
+  debugger
   if (form.get("_action") !== "delete") return json({ ok: false });
 
   const raw = String(form.get("id") || "");
@@ -118,6 +118,7 @@ export const action = async ({ request }) => {
   if (!id) return json({ ok: false, error: "Missing id" }, { status: 400 });
 
   await prisma.funnel.deleteMany({ where: { id, shopDomain: session.shop } });
+
   return json({ ok: true });
 };
 
@@ -208,7 +209,7 @@ export default function Index() {
         </Tooltip>
       </InlineStack>
       <Box paddingBlockEnd="300" />
-      <Divider />
+      <Divider borderColor="border-brand" />
       <Box paddingBlockEnd="500" />
       <Grid>
         <Grid.Cell columnSpan={{xs: 6, sm: 2, md: 2, lg: 4, xl: 4}}>
@@ -239,84 +240,89 @@ export default function Index() {
         </Grid.Cell>
       </Grid>
       <Box paddingBlockEnd="500" />
-      <Layout>
-        <Layout.Section>
-          <Card>
-            <BlockStack gap="300">
-              <InlineStack align="space-between" blockAlign="center">
-                <InlineStack gap="200" blockAlign="center">
-                  <Text as="h2" variant="headingLg">Funnels</Text>
-                  <Tooltip content="Your configured triggers and offers">
-                    <Icon source={InfoIcon} tone="subdued" />
-                  </Tooltip>
-                </InlineStack>
-                <Button onClick={() => nav(`/app/settings${search}`)}>Create a new funnel</Button>
-              </InlineStack>
 
-              <Divider />
-              <Box paddingBlockEnd="200" />
+      <InlineStack align="space-between" blockAlign="center">
+        <InlineStack gap="200" blockAlign="center">
+          <Text as="h1" variant="heading2xl">Funnels</Text>
+          <Tooltip content="List of funnels used for post-purchase">
+            <Icon source={InfoIcon} tone="subdued" />
+          </Tooltip>
+        </InlineStack>
+        <Button variant="secondary" onClick={() => nav(`/app/settings${search}`)}>Create a new funnel</Button>
+      </InlineStack>
 
-              <IndexTable
-                resourceName={{ singular: "funnel", plural: "funnels" }}
-                itemCount={items.length}
-                selectable={false}
-                sortColumnIndex={sortColumnIndex}
-                sortDirection={sortDirection}
-                onSort={onSort}
-                headings={[
-                  { title: "Funnel name", sortable: true },
-                  { title: "Trigger" },
-                  { title: "Offer" },
-                  { title: "Discount" },
-                  { title: "Actions" },
-                ]}
-              >
-                {items.map((f, index) => (
-                  <IndexTable.Row id={f.id} key={f.id} position={index}>
-                    <IndexTable.Cell>
-                      <InlineStack gap="200" blockAlign="center">
-                        <Text as="span" variant="bodyMd" fontWeight="semibold">
-                          <a href={buildSettingsHref(f.id, search)} style={{ textDecoration: "none" }}>
-                            {f.name}
-                          </a>
-                        </Text>
-                        <Badge tone={f.active ? "success" : "critical"}>
-                          {f.active ? "Active" : "Disabled"}
-                        </Badge>
-                      </InlineStack>
-                    </IndexTable.Cell>
-                    <IndexTable.Cell>
-                      <Text as="span" variant="bodySm">{f.triggerTitle}</Text>
-                    </IndexTable.Cell>
-                    <IndexTable.Cell>
-                      <Text as="span" variant="bodySm">{f.offerTitle}</Text>
-                    </IndexTable.Cell>
-                    <IndexTable.Cell>
-                      <Text as="span" variant="bodySm">{f.discountPct}%</Text>
-                    </IndexTable.Cell>
-                    <IndexTable.Cell>
-                      <RowActions
-                        id={f.id}
-                        name={f.name}
-                        onEdit={() => nav(buildSettingsHref(f.id, search))}
-                      />
-                    </IndexTable.Cell>
-                  </IndexTable.Row>
-                ))}
-              </IndexTable>
+      <Box paddingBlockEnd="300" />
+      <Divider borderColor="border-brand" />
+      <Box paddingBlockEnd="500" />
 
-              <InlineStack align="end">
-                <Pagination
-                  hasPrevious={hasPrevPage}
-                  onPrevious={() => updatePage(page - 1)}
-                  hasNext={hasNextPage}
-                  onNext={() => updatePage(page + 1)}
-                />
-              </InlineStack>
-            </BlockStack>
-          </Card>
-        </Layout.Section>
-      </Layout>
+      <BlockStack gap="300">
+        <LegacyCard>
+          <IndexTable
+            resourceName={{ singular: 'funnel', plural: 'funnels' }}
+            itemCount={items.length}
+            selectable={false}
+            headings={[
+              { title: 'Funnel name', sortable: true },
+              { title: 'Trigger' },
+              { title: 'Offer' },
+              { title: 'Discount', alignment: 'end' },
+              { title: '' },
+            ]}
+            sortable={[true, false, ,false, false, false]}
+            sortColumnIndex={sortColumnIndex}
+            sortDirection={sortDirection}
+            onSort={onSort}
+          >
+            {items.map((f, index) => (
+              <IndexTable.Row id={f.id} key={f.id} position={index}>
+                <IndexTable.Cell>
+                  <InlineStack gap="200" blockAlign="center">
+                    <Button
+                      variant="plain"
+                      onClick={() => nav(buildSettingsHref(f.id, search))}
+                    >
+                      <Text as="span" variant="bodyMd" fontWeight="semibold">
+                        {f.name}
+                      </Text>
+                    </Button>
+                  </InlineStack>
+                </IndexTable.Cell>
+
+                <IndexTable.Cell>
+                  <Text as="span" variant="bodySm">{f.triggerTitle}</Text>
+                </IndexTable.Cell>
+
+                <IndexTable.Cell>
+                  <Text as="span" variant="bodySm">{f.offerTitle}</Text>
+                </IndexTable.Cell>
+
+                <IndexTable.Cell>
+                  <Text as="span" variant="bodySm" alignment="end">
+                    {f.discountPct}%
+                  </Text>
+                </IndexTable.Cell>
+
+                <IndexTable.Cell>
+                  <RowActions
+                    id={f.id}
+                    name={f.name}
+                    onEdit={() => nav(buildSettingsHref(f.id, search))}
+                  />
+                </IndexTable.Cell>
+              </IndexTable.Row>
+            ))}
+          </IndexTable>
+        </LegacyCard>
+
+        <InlineStack align="end">
+          <Pagination
+            hasPrevious={hasPrevPage}
+            onPrevious={() => updatePage(page - 1)}
+            hasNext={hasNextPage}
+            onNext={() => updatePage(page + 1)}
+          />
+        </InlineStack>
+      </BlockStack>
     </Page>
   );
 }

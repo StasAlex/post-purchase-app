@@ -8,6 +8,11 @@ import { json } from "@remix-run/node";
  * Returns: { changeset: string }
  */
 export async function action({ request }) {
+  // CORS preflight
+  if (request.method === "OPTIONS") {
+       return new Response(null, { status: 204, headers: corsHeaders(request) });
+  }
+
   if (request.method !== "POST") {
     return json({ error: "method_not_allowed" }, { status: 405, headers: corsHeaders(request) });
   }
@@ -81,6 +86,15 @@ export async function action({ request }) {
     });
 
     if (!result.ok) {
+      console.error("[sign] calc failed", {
+        status: result.status,
+        error: result.error,
+        tried: result.tried,
+        requestId: result.requestId,
+        // кусочек тела, чтобы не заливать консоль
+        raw: (result.raw || "").slice(0, 400),
+        data: result.data
+      });
       return json(
         {
           error: result.error || "shopify_calculate_failed",
@@ -271,7 +285,8 @@ function corsHeaders(request) {
   return {
     "Access-Control-Allow-Origin": origin,
     Vary: "Origin",
-    "Access-Control-Allow-Headers": "authorization, content-type",
+    "Access-Control-Allow-Headers":
+      "Authorization, Content-Type, X-Requested-With, Shopify-Checkout-Reference-Id",
     "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
   };
 }

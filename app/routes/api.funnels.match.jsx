@@ -5,11 +5,13 @@ import shopify from "../shopify.server";
 /* =========================
    CORS
 ========================= */
-function corsHeaders() {
+function corsHeaders(request) {
+  const origin = request?.headers?.get?.("origin") || "*";
   return {
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers":
+      "Authorization, Content-Type, X-Requested-With, Shopify-Checkout-Reference-Id",
     "Access-Control-Max-Age": "86400",
     Vary: "Origin",
   };
@@ -102,8 +104,13 @@ async function fetchProductsMetaGraphQLHTTP(session, ids) {
           id
           title
           featuredImage { url }
-          variants(first: 1) {
-            nodes { id price { amount currencyCode } }
+          images(first: 10) { nodes { url } }
+          variants(first: 50) {
+           nodes {
+            id
+            title
+            price { amount currencyCode }
+           }
           }
         }
       }
@@ -133,7 +140,14 @@ async function fetchProductsMetaGraphQLHTTP(session, ids) {
         id: n.id,
         title: n.title || "Untitled product",
         image: n.featuredImage?.url || null,
+        images: (n.images?.nodes || []).map(i => i?.url).filter(Boolean),
         variantId: v0?.id || null,
+        variants: (n.variants?.nodes || []).map(v => ({
+          id: v?.id || null,
+          title: v?.title || '',
+          priceAmount: v?.price?.amount != null ? Number(v.price.amount) : null,
+          currencyCode: v?.price?.currencyCode || null,
+        })),
         price: money(amount, currency),     // "100.00 UAH"
         priceAmount: amount,                // число
         currencyCode: currency,             // "UAH"
@@ -187,7 +201,14 @@ async function fetchProductsMetaREST(session, ids) {
         id: gid,
         title: p.title || "Untitled product",
         image: p.image?.src || null,
+        images: Array.isArray(p.images) ? p.images.map(i => i?.src).filter(Boolean) : [],
         variantId: v0 ? `gid://shopify/ProductVariant/${v0.id}` : null,
+          variants: Array.isArray(p.variants) ? p.variants.map(v => ({
+            id: v?.id ? `gid://shopify/ProductVariant/${v.id}` : null,
+            title: v?.title || '',
+            priceAmount: v?.price != null ? Number(v.price) : null,
+            currencyCode: currency,
+        })) : [],
         price: money(amount, currency),
         priceAmount: amount,
         currencyCode: currency,
@@ -211,56 +232,100 @@ async function fetchProductsMetaREST(session, ids) {
 /* =========================
    Main matcher
 ========================= */
+/* =========================
+   Main matcher — для новой схемы Funnel
+   (triggerProductGid / offerProductGid)
+========================= */
 async function matchOffers(shop, productGids) {
-  const funnel = await prisma.funnel.findFirst({
-    where: {
+  // подготавливаем варианты совпадений (GID и «цифры»)
+  const digits = digitsFromGids(productGids);
+  const gidLike = [
+    ...productGids,
+    ...digits.map((d) => `gid://shopify/Product/${d}`),
+    ...digits, // на всякий, если в БД лежат только цифры
+  ].filter(Boolean);
+
+  // ищем активный воронко-фаннел по триггеру
+  let funnel = null;
+  let prismaError = null;
+  let prismaWhereUsed = null;
+
+  try {
+    prismaWhereUsed = {
       shopDomain: shop,
       active: true,
-      triggers: { some: { productGid: { in: productGids } } },
-    },
-    include: { offers: true },
-  });
+      OR: [
+        { triggerProductGid: { in: gidLike } },
+        // небольшой запас: иногда полезно «contains», если в БД мусор в виде префиксов
+        ...(digits.length ? [{ triggerProductGid: { contains: digits[0] } }] : []),
+      ],
+    };
 
-  const offerIds = Array.from(
-    new Set((funnel?.offers ?? []).map((o) => toProductGid(o.productGid)).filter(Boolean))
-  );
+    funnel = await prisma.funnel.findFirst({
+      where: prismaWhereUsed,
+      orderBy: { updatedAt: "desc" },
+      // include не нужен — relation нет
+    });
+  } catch (e) {
+    prismaError = String(e?.message || e);
+  }
+
+  // если не нашли — последний шанс: любой активный воронко-фаннел магазина
+  if (!funnel) {
+    try {
+      funnel = await prisma.funnel.findFirst({
+        where: { shopDomain: shop, active: true },
+        orderBy: { updatedAt: "desc" },
+      });
+    } catch (e) {
+      prismaError = prismaError || String(e?.message || e);
+    }
+  }
+
+  // собираем оффер (в новой схеме он один)
+  const offerIds = funnel?.offerProductGid ? [toProductGid(funnel.offerProductGid)].filter(Boolean) : [];
 
   let enriched = offerIds.map((id) => ({ id }));
 
-  // оффлайн сессия
+  // оффлайн-сессия Shopify Admin
   const { session, debug: sessDbg } = await getOfflineSession(shop);
 
   let byId = {};
   let fetchDbg = null;
 
-  // GraphQL через HTTP
-  if (session) {
-    const res = await fetchProductsMetaGraphQLHTTP(session, offerIds);
-    byId = res.byId;
-    fetchDbg = res.debug;
-  }
+  if (session && offerIds.length) {
+    // GraphQL
+    const r1 = await fetchProductsMetaGraphQLHTTP(session, offerIds);
+    byId = r1.byId;
+    fetchDbg = r1.debug;
 
-  // если вдруг пусто — REST фолбэк
-  if (!Object.keys(byId).length && session) {
-    const res = await fetchProductsMetaREST(session, offerIds);
-    byId = res.byId;
-    fetchDbg = res.debug;
+    // REST fallback
+    if (!Object.keys(byId).length) {
+      const r2 = await fetchProductsMetaREST(session, offerIds);
+      byId = r2.byId;
+      fetchDbg = r2.debug;
+    }
   }
 
   enriched = offerIds.map((id) => ({
-    id,
-    title: byId[id]?.title || null,
-    image: byId[id]?.image || null,
-    variantId: byId[id]?.variantId || null,
-    price: byId[id]?.price || null,
-    priceAmount: byId[id]?.priceAmount ?? null,
-    currencyCode: byId[id]?.currencyCode ?? null,
-  }));
+        id,
+         title: byId[id]?.title || null,
+        image: byId[id]?.image || null,
+        images: byId[id]?.images || [],
+        variantId: byId[id]?.variantId || null,
+        variants: byId[id]?.variants || [],
+        price: byId[id]?.price || null,
+       priceAmount: byId[id]?.priceAmount ?? null,
+       currencyCode: byId[id]?.currencyCode ?? null,
+        discountPct: funnel?.discountPct ?? 0,
+      }));
 
   const debug = {
     funnelId: funnel?.id || null,
     offerIds,
-    admin: sessDbg,   // что с сессией
+    prismaWhereUsed,
+    prismaError,
+    admin: sessDbg,
     fetchDbg,
     enrichment: { fetchedKeys: Object.keys(byId) },
   };
@@ -273,83 +338,107 @@ async function matchOffers(shop, productGids) {
 ========================= */
 export async function loader({ request }) {
   const url = new URL(request.url);
+
   if (request.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders() });
+    return new Response(null, { status: 204, headers: corsHeaders(request) });
   }
 
-  // health-check
-  if (!url.searchParams.has("shop")) {
-    return json({ ok: true }, { headers: corsHeaders() });
-  }
-
-  const shop = url.searchParams.get("shop") || "";
-  const gidsRaw = (url.searchParams.get("gids") || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const productGids = normalizeGids(gidsRaw);
-
-  const dbgInput = { shop, gidsRaw, productGids };
-
-  if (!shop) {
-    // Попробуем угадать магазин: берём самый свежий активный funnel
-    const latest = await prisma.funnel.findFirst({
-      where: { active: true },
-      orderBy: { updatedAt: 'desc' },
-      select: { shopDomain: true, id: true },
-    });
-    if (latest?.shopDomain) {
-      const guessed = latest.shopDomain;
-      dbgInput.shop = guessed;
-      // продолжаем как будто shop пришёл
-      const { enriched, debug } = await matchOffers(guessed, productGids);
-      return json({ offers: enriched, debug: { ...dbgInput, guessedFrom: 'latest-active-funnel', ...debug } }, { headers: corsHeaders() });
+  try {
+    // health-check
+    if (!url.searchParams.has("shop")) {
+      return json({ ok: true }, { headers: corsHeaders(request) });
     }
-    return json({ offers: [], debug: { ...dbgInput, reason: "no-shop" } }, { headers: corsHeaders() });
-  }
 
-  // Если gids пусты (превью/тест без линий) — попробуем подобрать первый активный фалбек-фаннел
-  // для магазина и вернуть его офферы, чтобы было что показать в UI
-  if (productGids.length === 0) {
-    const funnel = await prisma.funnel.findFirst({
-      where: { shopDomain: shop, active: true },
-      include: { offers: true },
-      orderBy: { createdAt: 'desc' },
-    });
-    const offerIds = Array.from(
-      new Set((funnel?.offers ?? []).map((o) => toProductGid(o.productGid)).filter(Boolean))
-    );
+    const shop = url.searchParams.get("shop") || "";
+    const gidsRaw = (url.searchParams.get("gids") || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const productGids = normalizeGids(gidsRaw);
 
-    const { session, debug: sessDbg } = await getOfflineSession(shop);
-    let byId = {};
-    let fetchDbg = null;
-    if (session) {
-      const res = await fetchProductsMetaGraphQLHTTP(session, offerIds);
-      byId = res.byId; fetchDbg = res.debug;
-      if (!Object.keys(byId).length) {
-        const r2 = await fetchProductsMetaREST(session, offerIds);
-        byId = r2.byId; fetchDbg = r2.debug;
+    const dbgInput = { shop, gidsRaw, productGids };
+
+    if (!shop) {
+      const latest = await prisma.funnel.findFirst({
+        where: { active: true },
+        orderBy: { updatedAt: "desc" },
+        select: { shopDomain: true, id: true },
+      });
+
+      if (latest?.shopDomain) {
+        const guessed = latest.shopDomain;
+        dbgInput.shop = guessed;
+        const { enriched, debug } = await matchOffers(guessed, productGids);
+        return json(
+          { offers: enriched, debug: { ...dbgInput, guessedFrom: "latest-active-funnel", ...debug } },
+          { headers: corsHeaders(request) }
+        );
       }
+
+      return json(
+        { offers: [], debug: { ...dbgInput, reason: "no-shop" } },
+        { headers: corsHeaders(request) }
+      );
     }
 
-    const enriched = offerIds.map((id) => ({
-      id,
-      title: byId[id]?.title || null,
-      image: byId[id]?.image || null,
-      variantId: byId[id]?.variantId || null,
-      price: byId[id]?.price || null,
-      priceAmount: byId[id]?.priceAmount ?? null,
-      currencyCode: byId[id]?.currencyCode ?? null,
-    }));
+    // Если gids пусты — подберём самый свежий активный фаннел и вернём его оффер
+    if (productGids.length === 0) {
+      const funnel = await prisma.funnel.findFirst({
+        where: { shopDomain: shop, active: true },
+        orderBy: { updatedAt: "desc" },
+      });
 
-    return json({
-      offers: enriched,
-      debug: { ...dbgInput, reason: 'fallback-no-gids', funnelId: funnel?.id || null, admin: sessDbg, fetchDbg }
-    }, { headers: corsHeaders() });
+      const offerIds = funnel?.offerProductGid
+        ? [toProductGid(funnel.offerProductGid)].filter(Boolean)
+        : [];
+
+      const { session, debug: sessDbg } = await getOfflineSession(shop);
+
+      let byId = {};
+      let fetchDbg = null;
+
+      if (session && offerIds.length) {
+        const r1 = await fetchProductsMetaGraphQLHTTP(session, offerIds);
+        byId = r1.byId; fetchDbg = r1.debug;
+
+        if (!Object.keys(byId).length) {
+          const r2 = await fetchProductsMetaREST(session, offerIds);
+          byId = r2.byId; fetchDbg = r2.debug;
+        }
+      }
+
+      const enriched = offerIds.map((id) => ({
+        id,
+        title: byId[id]?.title || null,
+        image: byId[id]?.image || null,
+        variantId: byId[id]?.variantId || null,
+        price: byId[id]?.price || null,
+        priceAmount: byId[id]?.priceAmount ?? null,
+        currencyCode: byId[id]?.currencyCode ?? null,
+      }));
+
+      return json({
+        offers: enriched,
+        debug: {
+          shop,
+          gidsRaw,
+          productGids,
+          reason: "fallback-no-gids",
+          funnelId: funnel?.id || null,
+          admin: sessDbg,
+          fetchDbg,
+        },
+      }, { headers: corsHeaders(request) });
+    }
+
+    const { enriched, debug } = await matchOffers(shop, productGids);
+    return json({ offers: enriched, debug: { ...dbgInput, ...debug } }, { headers: corsHeaders(request) });
+  } catch (e) {
+    return json(
+      { offers: [], debug: { error: String(e?.message || e), where: "loader" } },
+      { status: 500, headers: corsHeaders(request) }
+    );
   }
-
-  const { enriched, debug } = await matchOffers(shop, productGids);
-  return json({ offers: enriched, debug: { ...dbgInput, ...debug } }, { headers: corsHeaders() });
 }
 
 /* =========================
@@ -357,7 +446,7 @@ export async function loader({ request }) {
 ========================= */
 export async function action({ request }) {
   if (request.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders() });
+    return new Response(null, { status: 204, headers: corsHeaders(request) });
   }
   let body = {};
   try { body = await request.json(); } catch {}
@@ -367,9 +456,9 @@ export async function action({ request }) {
   const dbgInput = { shop, productGids, via: "POST" };
 
   if (!shop || productGids.length === 0) {
-    return json({ offers: [], debug: { ...dbgInput, reason: "no-shop-or-gids" } }, { headers: corsHeaders() });
+    return json({ offers: [], debug: { ...dbgInput, reason: "no-shop-or-gids" } }, { headers: corsHeaders(request) });
   }
 
   const { enriched, debug } = await matchOffers(shop, productGids);
-  return json({ offers: enriched, debug: { ...dbgInput, ...debug } }, { headers: corsHeaders() });
+  return json({ offers: enriched, debug: { ...dbgInput, ...debug } }, { headers: corsHeaders(request) });
 }

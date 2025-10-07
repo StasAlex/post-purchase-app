@@ -1,4 +1,20 @@
 /* eslint-disable no-console */
+
+// pp-process-polyfill.ts
+import {Layout} from "@shopify/post-purchase-ui-extensions";
+
+export function installProcessPolyfill() {
+  const g = globalThis;
+  if (typeof g.process === 'undefined') {
+    // Минимум, что ждут либы: process.env.NODE_ENV
+    g.process = { env: { NODE_ENV: 'production' } };
+  } else {
+    g.process.env = g.process.env || {};
+    if (!('NODE_ENV' in g.process.env)) g.process.env.NODE_ENV = 'production';
+  }
+}
+installProcessPolyfill();
+
 import React, { useState } from "react";
 import {
   extend,
@@ -12,9 +28,41 @@ import {
   TextContainer,
   View,
   Tiles,
+  InlineStack
 } from "@shopify/post-purchase-ui-extensions-react";
 
-const APP_URL = process.env.APP_URL || process.env.SHOPIFY_APP_URL || globalThis.APP_URL || "";
+function maskToken(t) {
+  if (!t) return null;
+  return `${t.slice(0, 6)}…${t.slice(-4)} (${t.length})`;
+}
+function ppLog(tag, payload) {
+  try {
+    console.log(`[PP] ${tag}`, payload ?? '');
+  } catch {}
+}
+function summarizeInput(inputData) {
+  const lines =
+    inputData?.initialPurchase?.lineItems ??
+    inputData?.initialPurchase?.lines ?? [];
+  return {
+    referenceId:
+      inputData?.referenceId ||
+      inputData?.initialPurchase?.referenceId ||
+      inputData?.initialPurchase?.id || null,
+    shop:
+      inputData?.shop?.myshopifyDomain ||
+      inputData?.shopDomain ||
+      inputData?.shop?.domain || null,
+    token: maskToken(inputData?.token || ''),
+    linesCount: lines.length,
+  };
+}
+
+const APP_URL =
+  (process.env.APP_URL || process.env.SHOPIFY_APP_URL || (typeof globalThis !== "undefined" ? globalThis.APP_URL : "")) || "";
+
+console.log("[PP] APP_URL baked:", APP_URL); // временно, для проверки
+
 if (!APP_URL) console.warn("[PP] APP_URL is not set. Put APP_URL in .env");
 
 const PLACEHOLDER = "https://cdn.shopify.com/static/images/examples/img-placeholder-1120x1120.png";
@@ -63,10 +111,44 @@ function extractProductGidsFromLineItem(li) {
   return uniq(out);
 }
 
+// приведение ответа API к удобному виду для UI
+function normalizeOffer(raw) {
+  const images =
+      Array.isArray(raw.images) && raw.images.length
+        ? raw.images
+          : (raw.image ? [raw.image] : []);
+
+    const variants = Array.isArray(raw.variants)
+      ? raw.variants.map(v => ({
+            id: v.id,                       // GID варианта
+            title: v.title || "Option",
+          priceAmount: v.priceAmount ?? raw.priceAmount ?? null,
+          currencyCode: v.currencyCode ?? raw.currencyCode ?? null,
+        }))
+    : [];
+
+    const variantId = raw.variantId || variants[0]?.id || null; // GID по умолчанию
+
+    return {
+      id: raw.id,
+      title: raw.title || "Product",
+      images,
+      image: images[0] || null,
+      variants,
+      variantId,
+      priceAmount: raw.priceAmount ?? null,
+      currencyCode: raw.currencyCode ?? null,
+      discountPct: Number(raw.discountPct || 0),
+    };
+}
+
+
 /* =========================
    ShouldRender — грузим офферы
 ========================= */
 extend("Checkout::PostPurchase::ShouldRender", async ({ storage, inputData }) => {
+  ppLog("ShouldRender:init", summarizeInput(inputData));
+
   const lineItems =
     inputData?.initialPurchase?.lineItems ??
     inputData?.initialPurchase?.lines ?? [];
@@ -94,51 +176,61 @@ extend("Checkout::PostPurchase::ShouldRender", async ({ storage, inputData }) =>
   let offers = [];
   const debug = { shop, lineItemsCount: lineItems.length, productGids, fetch: {}, origin };
 
-  // Даже если productGids пусты (превью), попробуем дернуть сервер — там есть фолбэк
+  // Даже если productGids пусты (превью), пробуем дернуть сервер — там есть фолбэк
   if (APP_URL && shop) {
+    const url = `${APP_URL}/api/funnels/match?shop=${encodeURIComponent(shop)}&gids=${encodeURIComponent(
+      (productGids || []).join(","),
+    )}`;
+    ppLog("ShouldRender:fetch →", { url, gidsCount: productGids.length });
+
     try {
-      const url = `${APP_URL}/api/funnels/match?shop=${encodeURIComponent(shop)}&gids=${encodeURIComponent(
-        (productGids || []).join(","),
-      )}`;
       const res = await fetch(url, { cache: "no-store", credentials: "omit" });
       debug.fetch.ok = res.ok;
       debug.fetch.status = res.status;
+      ppLog("ShouldRender:fetch:status", { ok: res.ok, status: res.status });
 
       let data = null;
       try { data = await res.json(); } catch (e) { debug.fetch.jsonError = String(e?.message || e); }
-
       debug.responseKeys = data ? Object.keys(data) : [];
       debug.serverDebug = data?.debug ?? null;
 
-      offers = Array.isArray(data?.offers)
-        ? data.offers.map((o) => {
-          const parsed = typeof o.price === "string" ? parsePriceString(o.price) : { amount: null, code: null };
-          const amount = o.priceAmount ?? parsed.amount;
-          const code = o.currencyCode ?? parsed.code;
-          const price = hardPrice(amount, code) || o.price || null;
-
-          // нормализуем variantId в ЧИСЛО
-          const gidLike = o.variantId ?? o.variant_id ?? null;
-          const vidNum = Number(String(gidLike ?? "").match(/\d+$/)?.[0]);
-          const variantId = Number.isFinite(vidNum) ? vidNum : (typeof o.variantId === "number" ? o.variantId : null);
-
-          return { ...o, price, variantId, variantIdGid: gidLike ?? null };
-        })
-        : [];
+      offers = Array.isArray(data?.offers) ? data.offers.map(normalizeOffer) : [];
+      ppLog("ShouldRender:offers:parsed", { count: offers.length });
     } catch (e) {
       debug.fetch.error = String(e?.message || e);
+      ppLog("ShouldRender:fetch:error", debug.fetch.error);
     }
+  } else {
+    ppLog("ShouldRender:skip-fetch", { hasAPP_URL: !!APP_URL, shop });
   }
 
-  await storage.update({ offers, debugInfo: debug, meta: { shop, referenceId, origin } });
-  return { render: offers.length > 0 || DEBUG };
+  try {
+    await storage.update({ offers, debugInfo: debug, meta: { shop, referenceId, origin } });
+    ppLog("ShouldRender:storage.update", { offers: offers.length });
+  } catch (e) {
+    ppLog("ShouldRender:storage.error", String(e?.message || e));
+  }
+
+  // В деве полезно всё равно отрендерить DebugPanel, даже без офферов
+  const isDev = (globalThis?.process?.env?.NODE_ENV !== 'production');
+  console.log('isDev', isDev);
+  const decision = { render: offers.length > 0 || isDev };
+  ppLog("ShouldRender:decision", decision);
+
+  // return decision;
+  return { render: true };
 });
 
 /* =========================
    Render
 ========================= */
-// Важно: оборачиваем в компонент, чтобы избежать Invalid hook call
-render("Checkout::PostPurchase::Render", () => <App />);
+render("Checkout::PostPurchase::Render", (api) => {
+  ppLog("Render:mount", {
+    hasApply: typeof api.applyChangeset === "function",
+    hasDone: typeof api.done === "function",
+  });
+  return <App {...api} />;
+});
 
 export function App({ storage, inputData, applyChangeset, done }) {
   const initial   = storage?.initialData || {};
@@ -193,61 +285,77 @@ export function App({ storage, inputData, applyChangeset, done }) {
     hasAppUrl: !!APP_URL,
   });
 
-  async function addVariantToOrder(variantIdRaw) {
+  ppLog("Render:ctx", {
+    shop,
+    referenceId,
+    token: maskToken(token),
+    checkoutOrigin,
+    offersCount: offers.length,
+    offers: offers
+  });
+
+  async function addVariantToOrder(variantIdRaw, quantity = 1) {
     const vid =
       typeof variantIdRaw === "number" ? variantIdRaw : Number(String(variantIdRaw ?? "").match(/\d+$/)?.[0]);
 
+    ppLog("Add:start", { raw: variantIdRaw, parsed: vid });
+
     if (!Number.isFinite(vid)) {
-      console.warn("[PP] Bad variantId (need number):", variantIdRaw);
+      ppLog("Add:bad-variant", variantIdRaw);
       return;
     }
     if (!APP_URL) {
-      console.warn("[PP] APP_URL is not set, cannot sign changeset");
+      ppLog("Add:no-APP_URL", null);
       return;
     }
     if (!token || !referenceId || !shop) {
-      console.warn("[PP] Missing token/referenceId/shop in inputData", { hasToken: !!token, referenceId, shop });
+      ppLog("Add:missing-input", { hasToken: !!token, referenceId, shop });
       return;
     }
 
-    // snake_case как требует calculate
-    const changes = [{ type: "add_variant", variant_id: vid, quantity: 1 }];
+    const changes = [{ type: "add_variant", variant_id: vid, quantity: Math.max(1, Number(quantity) || 1) }];
+
 
     try {
+      ppLog("Add:sign:request", { url: `${APP_URL}/api/postpurchase/sign`, shop, referenceId, checkoutOrigin });
       const res = await fetch(`${APP_URL}/api/postpurchase/sign`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          authorization: `Bearer ${token}`, // Buyer token из inputData
+          authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({ shop, referenceId, changes, checkoutOrigin }),
       });
 
-      const payload = await res.json().catch(() => ({}));
+      const raw = await res.text();
+      let payload;
+      try { payload = JSON.parse(raw); } catch { payload = { raw }; }
+
+      ppLog("Add:sign:response", { ok: res.ok, status: res.status, hasChangeset: !!payload?.changeset });
+      ppLog("Add:sign:payload", payload);     // <— ключевая строка
+
       if (!res.ok) {
         setServerProbe({ when: Date.now(), status: res.status, payload });
-        console.error("[PP] sign failed", payload);
         return;
       }
 
       const changeset = payload?.changeset;
       if (!changeset) {
         setServerProbe({ when: Date.now(), status: 200, payload: { error: "no_changeset_token_in_response" } });
-        console.error("[PP] no changeset token from server", payload);
         return;
       }
 
       if (!canApply) {
-        console.warn("[PP] applyChangeset not available (likely preview). Signed ok, skipping apply.");
+        ppLog("Add:apply:skipped-no-applyChangeset", null);
         return;
       }
 
       const result = await applyChangeset(changeset);
-      console.log("[PP] applyChangeset →", result);
+      ppLog("Add:apply:result", result);
       if (result?.status === "ACCEPTED" && typeof done === "function") await done();
     } catch (e) {
       setServerProbe({ when: Date.now(), error: String(e?.message || e) });
-      console.error("[PP] addVariantToOrder error:", e);
+      ppLog("Add:error", String(e?.message || e));
     }
   }
 
@@ -282,13 +390,13 @@ export function App({ storage, inputData, applyChangeset, done }) {
       )}
 
       <View inlineSize="fill" maxInlineSize={CONTAINER_MAX} padding="base">
-        <Tiles maxPerLine={5} spacing="base" align="center">
+        <Tiles maxPerLine={1} spacing="base" align="center">
           {offers.map((offer, i) => (
             <View key={offer.id || i} minInlineSize={CARD_MIN} maxInlineSize={CARD_MAX} padding="base">
               <OfferCard
                 offer={offer}
-                onAdd={() => addVariantToOrder(offer?.variantId)}
-                onProbeClient={() => probeClientCalculate(offer?.variantId)}
+                onAdd={(vid, qty) => addVariantToOrder(vid, qty)}
+                onDecline={done}
                 disabled={!token}
               />
             </View>
@@ -317,27 +425,129 @@ export function App({ storage, inputData, applyChangeset, done }) {
   );
 }
 
-function OfferCard({ offer, onAdd, onProbeClient, disabled }) {
-  const img = offer?.image || PLACEHOLDER;
-  const title = offer?.title || "Product";
-  const price = offer?.price || null;
+function OfferCard({ offer, onAdd, onDecline, disabled }) {
+  const images = Array.isArray(offer?.images) && offer.images.length
+    ? offer.images
+    : (offer?.image ? [offer.image] : [PLACEHOLDER]);
+
+  const [activeImg, setActiveImg] = useState(0);
+  const [qty, setQty] = useState(1);
+  const [selected, setSelected] = useState(offer?.variantId || offer?.variants?.[0]?.id || null);
+
+  const variants = Array.isArray(offer?.variants) ? offer.variants : [];
+  const current = variants.find(v => v.id === selected) || variants[0] || null;
+
+  const amount = current?.priceAmount ?? offer?.priceAmount ?? null;
+  const code   = current?.currencyCode ?? offer?.currencyCode ?? null;
+
+  const baseStr      = amount != null ? hardPrice(amount, code) : null;
+  const discountPct  = Number(offer?.discountPct || 0);
+  const discounted   = amount != null ? amount * (1 - discountPct / 100) : null;
+  const discountedStr= discounted != null ? hardPrice(discounted, code) : null;
+  const subtotal     = discounted != null ? discounted * qty : null;
+  const subtotalStr  = subtotal != null ? hardPrice(subtotal, code) : null;
 
   return (
-    <View border="base" cornerRadius="large" padding="base">
-      <BlockStack spacing="tight">
-        <Image source={img} aspectRatio={2 / 3} fit="contain" />
-        <TextContainer>
-          <Heading>{title}</Heading>
-          {price ? <TextBlock>{price}</TextBlock> : null}
-        </TextContainer>
-        <Button disabled={disabled} onPress={onAdd}>
-          Add to order
-        </Button>
-        {DEBUG ? (
-          <Button kind="secondary" onPress={onProbeClient} disabled={!offer?.variantId || disabled}>
-            Calc (client) {/* DEBUG only */}
-          </Button>
+    <View padding="base"
+          inlineSize="fill"
+          maxInlineSize={900}
+          alignSelf="center"
+    >
+      <BlockStack spacing="xloose">
+        {/* Верхняя плашка со скидкой */}
+        {discountPct > 0 ? (
+          <View>
+            <Layout blockAlignment="center">
+              <Heading> {`We have offer for you with ${discountPct}% discount`}</Heading>
+            </Layout>
+          </View>
+
         ) : null}
+        {/* двухколоночный блок: слева галерея, справа детали */}
+        <Tiles maxPerLine={2}>
+          {/* Галерея */}
+          <View>
+            <Image source={images[Math.min(activeImg, images.length - 1)]} aspectRatio={1} fit="contain" />
+            {images.length > 1 ? (
+              <View padding="tight">
+                <Tiles maxPerLine={6} spacing="tight">
+                  {images.map((src, i) => (
+                    <View
+                      key={i}
+                      border={i === activeImg ? "emphasized" : "base"}
+                      cornerRadius="large"
+                      padding="tight"
+                      onPress={() => setActiveImg(i)}
+                    >
+                      <Image source={src} aspectRatio={1} fit="contain" />
+                    </View>
+                  ))}
+                </Tiles>
+              </View>
+            ) : null}
+          </View>
+
+          {/* Детали */}
+          <View>
+            <BlockStack >
+              <Heading>{offer?.title || "Product name"}</Heading>
+
+              <View>
+                {discountPct > 0 && baseStr ? (
+                  <TextBlock appearance="subdued" size="small">{baseStr}</TextBlock>
+                ) : null}
+                <TextBlock emphasis="bold">{discountedStr || baseStr || "—"}</TextBlock>
+              </View>
+
+              {/* Кол-во и варианты */}
+              <Tiles spacing="base">
+                <View>
+                  <TextBlock>Quantity:</TextBlock>
+                  <Tiles maxPerLine={3} spacing="tight">
+                    <Button kind="secondary" onPress={() => setQty(q => Math.max(1, q - 1))}>−</Button>
+                    <View padding="base"><TextBlock>{qty}</TextBlock></View>
+                    <Button kind="secondary" onPress={() => setQty(q => Math.min(99, q + 1))}>+</Button>
+                  </Tiles>
+                </View>
+
+                {variants.length > 1 ? (
+                  <View>
+                    <TextBlock size="small">Variant:</TextBlock>
+                    <Tiles maxPerLine={3} spacing="tight">
+                      {variants.map(v => (
+                        <Button
+                          key={v.id}
+                          kind={v.id === selected ? "primary" : "secondary"}
+                          onPress={() => setSelected(v.id)}
+                        >
+                          {v.title || "Option"}
+                        </Button>
+                      ))}
+                    </Tiles>
+                  </View>
+                ) : null}
+              </Tiles>
+
+              {/* Totals */}
+              <View>
+                <Tiles maxPerLine={2} spacing="tight">
+                  <TextBlock appearance="subdued">Subtotal</TextBlock>
+                  <TextBlock>{subtotalStr || "—"}</TextBlock>
+                  <TextBlock appearance="subdued">Shipping</TextBlock>
+                  <TextBlock>Free</TextBlock>
+                  <TextBlock emphasis="bold">Total</TextBlock>
+                  <TextBlock emphasis="bold">{subtotalStr || "—"}</TextBlock>
+                </Tiles>
+              </View>
+
+              {/* Кнопки */}
+              <Button onPress={() => onAdd(selected, qty)} disabled={disabled}>
+                {subtotalStr ? `Pay now ${subtotalStr}` : "Pay now"}
+              </Button>
+              <Button kind="secondary" onPress={onDecline}>Decline this offer</Button>
+            </BlockStack>
+          </View>
+        </Tiles>
       </BlockStack>
     </View>
   );
@@ -374,7 +584,12 @@ function DebugPanel({ debugInfo, offersCount, extra = {} }) {
 
           {extra.serverProbe ? (
             <TextBlock>
-              serverProbe: {JSON.stringify(extra.serverProbe)}
+              serverProbe:
+              {" status=" + extra.serverProbe.status}
+              {" error=" + (extra.serverProbe.payload?.error || "-")}
+              {" tried=" + (extra.serverProbe.payload?.tried?.[0] || "-")}
+              {" reqId=" + (extra.serverProbe.payload?.requestId || "-")}
+              {" raw=" + (extra.serverProbe.payload?.raw || "").slice(0,300)}
             </TextBlock>
           ) : null}
           {extra.clientProbe ? (

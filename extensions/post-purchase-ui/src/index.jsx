@@ -384,7 +384,7 @@ export function App({ storage, inputData, applyChangeset, done }) {
 
   return (
     <View spacing="loose">
-      <Layout maxInlineSize="0.9" sizes={['fill']}>
+      <Layout maxInlineSize="900" sizes={['fill']}>
         <BlockStack spacing="xloose">
           <View />
           <View >

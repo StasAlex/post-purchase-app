@@ -1,7 +1,7 @@
 /* eslint-disable no-console */
 
 // pp-process-polyfill.ts
-import {Layout} from "@shopify/post-purchase-ui-extensions";
+import {Layout, Separator} from "@shopify/post-purchase-ui-extensions";
 
 export function installProcessPolyfill() {
   const g = globalThis;
@@ -28,7 +28,8 @@ import {
   TextContainer,
   View,
   Tiles,
-  InlineStack
+  InlineStack,
+  Text
 } from "@shopify/post-purchase-ui-extensions-react";
 
 function maskToken(t) {
@@ -382,46 +383,43 @@ export function App({ storage, inputData, applyChangeset, done }) {
   }
 
   return (
-    <BlockStack spacing="loose">
-      {!APP_URL && (
-        <CalloutBanner title="APP_URL is not set" status="critical">
-          Set APP_URL in your .env so the extension can sign changesets.
-        </CalloutBanner>
-      )}
-
-      <View inlineSize="fill" maxInlineSize={CONTAINER_MAX} padding="base">
-        <Tiles maxPerLine={1} spacing="base" align="center">
-          {offers.map((offer, i) => (
-            <View key={offer.id || i} minInlineSize={CARD_MIN} maxInlineSize={CARD_MAX} padding="base">
+    <View spacing="loose">
+      <Layout maxInlineSize="0.9" sizes={['fill']}>
+        <BlockStack spacing="xloose">
+          <View />
+          <View >
+          <Tiles alignment="leading">
+            {offers.map((offer, i) => (
               <OfferCard
                 offer={offer}
                 onAdd={(vid, qty) => addVariantToOrder(vid, qty)}
                 onDecline={done}
                 disabled={!token}
               />
-            </View>
-          ))}
-        </Tiles>
-      </View>
-
-      {(DEBUG || offers.length === 0) ? (
-        <DebugPanel
-          debugInfo={debugInfo}
-          offersCount={offers.length}
-          extra={{
-            referenceId,
-            checkoutOrigin,
-            canApply,
-            isPreviewCheckout,
-            hasAppUrl: !!APP_URL,
-            tokenLen: token?.length || 0,
-            tokenHead: token?.slice(0, 6) || "",
-            serverProbe,
-            clientProbe,
-          }}
-        />
-      ) : null}
-    </BlockStack>
+            ))}
+          </Tiles>
+        </View>
+          <View />
+        </BlockStack>
+      </Layout>
+      {/*{(DEBUG || offers.length === 0) ? (*/}
+      {/*  <DebugPanel*/}
+      {/*    debugInfo={debugInfo}*/}
+      {/*    offersCount={offers.length}*/}
+      {/*    extra={{*/}
+      {/*      referenceId,*/}
+      {/*      checkoutOrigin,*/}
+      {/*      canApply,*/}
+      {/*      isPreviewCheckout,*/}
+      {/*      hasAppUrl: !!APP_URL,*/}
+      {/*      tokenLen: token?.length || 0,*/}
+      {/*      tokenHead: token?.slice(0, 6) || "",*/}
+      {/*      serverProbe,*/}
+      {/*      clientProbe,*/}
+      {/*    }}*/}
+      {/*  />*/}
+      {/*) : null}*/}
+    </View>
   );
 }
 
@@ -447,109 +445,129 @@ function OfferCard({ offer, onAdd, onDecline, disabled }) {
   const subtotal     = discounted != null ? discounted * qty : null;
   const subtotalStr  = subtotal != null ? hardPrice(subtotal, code) : null;
 
+  const strike = (s = "") => s.split("").map(ch => ch + "\u0336").join("");
+
+  console.log('offer', offer);
+  console.log('baseStr', baseStr);
   return (
-    <View padding="base"
-          inlineSize="fill"
-          maxInlineSize={900}
-          alignSelf="center"
-    >
-      <BlockStack spacing="xloose">
-        {/* Верхняя плашка со скидкой */}
-        {discountPct > 0 ? (
-          <View>
-            <Layout blockAlignment="center">
-              <Heading> {`We have offer for you with ${discountPct}% discount`}</Heading>
-            </Layout>
-          </View>
+    <BlockStack spacing="xloose">
+      {/* Верхняя плашка со скидкой */}
+      {discountPct > 0 ? (
+        <View marginBlockStart="base">
+          <Layout blockAlignment="center">
+            <View blockSize="100px" />
+            <Heading> {`We have offer for you with ${discountPct}% discount`}</Heading>
+          </Layout>
+        </View>
 
-        ) : null}
-        {/* двухколоночный блок: слева галерея, справа детали */}
-        <Tiles maxPerLine={2}>
-          {/* Галерея */}
-          <View>
-            <Image source={images[Math.min(activeImg, images.length - 1)]} aspectRatio={1} fit="contain" />
-            {images.length > 1 ? (
-              <View padding="tight">
-                <Tiles maxPerLine={6} spacing="tight">
-                  {images.map((src, i) => (
-                    <View
-                      key={i}
-                      border={i === activeImg ? "emphasized" : "base"}
-                      cornerRadius="large"
-                      padding="tight"
-                      onPress={() => setActiveImg(i)}
-                    >
-                      <Image source={src} aspectRatio={1} fit="contain" />
-                    </View>
-                  ))}
-                </Tiles>
-              </View>
-            ) : null}
-          </View>
+      ) : null}
+      {/* двухколоночный блок: слева галерея, справа детали */}
+      <Tiles maxPerLine={2}>
+        {/* Галерея */}
+        <View>
+          <Image source={images[Math.min(activeImg, images.length - 1)]} aspectRatio={1} fit="contain" />
+          {images.length > 1 ? (
+            <View padding="tight">
+              <Tiles maxPerLine={6} spacing="tight">
+                {images.map((src, i) => (
+                  <View
+                    key={i}
+                    border={i === activeImg ? "emphasized" : "base"}
+                    cornerRadius="large"
+                    padding="tight"
+                    onPress={() => setActiveImg(i)}
+                  >
+                    <Image source={src} aspectRatio={1} fit="contain" />
+                  </View>
+                ))}
+              </Tiles>
+            </View>
+          ) : null}
+        </View>
 
-          {/* Детали */}
-          <View>
-            <BlockStack >
-              <Heading>{offer?.title || "Product name"}</Heading>
+        {/* Детали */}
+        <View>
+          <BlockStack spacing="base">
+            <Heading>{offer?.title || "Product name"}</Heading>
 
-              <View>
-                {discountPct > 0 && baseStr ? (
-                  <TextBlock appearance="subdued" size="small">{baseStr}</TextBlock>
-                ) : null}
-                <TextBlock emphasis="bold">{discountedStr || baseStr || "—"}</TextBlock>
-              </View>
-
-              {/* Кол-во и варианты */}
-              <Tiles spacing="base">
+            <View>
+              {discountPct > 0 && discounted != null && amount != null && discounted < amount ? (
                 <View>
+                  <InlineStack spacing="loose">
+                    <Text size="xlarge" appearance="subdued">
+                      {strike(baseStr)}
+                    </Text>
+                    <Text size="xlarge" appearance="critical" emphasis="bold">
+                      {discountedStr}
+                    </Text>
+                  </InlineStack>
+                </View>
+              ) : (
+                <TextBlock emphasis="bold">{baseStr || "—"}</TextBlock>
+              )}
+            </View>
+
+            {/* Кол-во и варианты */}
+            <Tiles spacing="base">
+              <View>
+                <BlockStack spacing="base">
                   <TextBlock>Quantity:</TextBlock>
-                  <Tiles maxPerLine={3} spacing="tight">
-                    <Button kind="secondary" onPress={() => setQty(q => Math.max(1, q - 1))}>−</Button>
+                  <InlineStack spacing="tight" alignment="center">
+                    <Button subdued="true" onPress={() => setQty(q => Math.max(1, q - 1))}>−</Button>
                     <View padding="base"><TextBlock>{qty}</TextBlock></View>
-                    <Button kind="secondary" onPress={() => setQty(q => Math.min(99, q + 1))}>+</Button>
+                    <Button subdued="true" onPress={() => setQty(q => Math.min(99, q + 1))}>+</Button>
+                  </InlineStack>
+                </BlockStack>
+              </View>
+
+              {variants.length > 1 ? (
+                <View>
+                  <TextBlock size="small">Variant:</TextBlock>
+                  <Tiles maxPerLine={3} spacing="tight">
+                    {variants.map(v => (
+                      <Button
+                        key={v.id}
+                        kind={v.id === selected ? "primary" : "secondary"}
+                        onPress={() => setSelected(v.id)}
+                      >
+                        {v.title || "Option"}
+                      </Button>
+                    ))}
                   </Tiles>
                 </View>
+              ) : null}
+            </Tiles>
 
-                {variants.length > 1 ? (
-                  <View>
-                    <TextBlock size="small">Variant:</TextBlock>
-                    <Tiles maxPerLine={3} spacing="tight">
-                      {variants.map(v => (
-                        <Button
-                          key={v.id}
-                          kind={v.id === selected ? "primary" : "secondary"}
-                          onPress={() => setSelected(v.id)}
-                        >
-                          {v.title || "Option"}
-                        </Button>
-                      ))}
-                    </Tiles>
-                  </View>
-                ) : null}
+            <Separator/>
+
+            {/* Totals */}
+            <View>
+              <Tiles maxPerLine={2} spacing="tight">
+                <TextBlock appearance="subdued">Subtotal</TextBlock>
+                <TextBlock>{subtotalStr || "—"}</TextBlock>
+                <TextBlock appearance="subdued">Shipping</TextBlock>
+                <TextBlock>Free</TextBlock>
               </Tiles>
+            </View>
 
-              {/* Totals */}
-              <View>
-                <Tiles maxPerLine={2} spacing="tight">
-                  <TextBlock appearance="subdued">Subtotal</TextBlock>
-                  <TextBlock>{subtotalStr || "—"}</TextBlock>
-                  <TextBlock appearance="subdued">Shipping</TextBlock>
-                  <TextBlock>Free</TextBlock>
-                  <TextBlock emphasis="bold">Total</TextBlock>
-                  <TextBlock emphasis="bold">{subtotalStr || "—"}</TextBlock>
-                </Tiles>
-              </View>
+            <Separator/>
 
-              {/* Кнопки */}
-              <Button onPress={() => onAdd(selected, qty)} disabled={disabled}>
-                {subtotalStr ? `Pay now ${subtotalStr}` : "Pay now"}
-              </Button>
-              <Button kind="secondary" onPress={onDecline}>Decline this offer</Button>
-            </BlockStack>
-          </View>
-        </Tiles>
-      </BlockStack>
-    </View>
+            <View>
+              <Tiles maxPerLine={2} spacing="tight">
+                <TextBlock emphasis="bold">Total</TextBlock>
+                <TextBlock emphasis="bold">{subtotalStr || "—"}</TextBlock>
+              </Tiles>
+            </View>
+
+            {/* Кнопки */}
+            <Button appearance="subdued" onPress={() => onAdd(selected, qty)} disabled={disabled}>
+              {subtotalStr ? `Pay now ${subtotalStr}` : "Pay now"}
+            </Button>
+            <Button subdued="true" onPress={onDecline}>Decline this offer</Button>
+          </BlockStack>
+        </View>
+      </Tiles>
+    </BlockStack>
   );
 }
 

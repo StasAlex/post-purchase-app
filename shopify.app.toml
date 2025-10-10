@@ -3,7 +3,7 @@
 client_id = "e06795ee74e6291243df3630aef28abe"
 name = "post-purchase-app"
 handle = "post-purchase-app-78"
-application_url = "https://ad9be5b6b219.ngrok-free.app"
+application_url = "https://post-purchase-app.vercel.app"
 embedded = true
 
 [build]
@@ -26,9 +26,9 @@ scopes = "write_products,read_products,read_checkouts,write_checkouts,read_order
 
 [auth]
 redirect_urls = [
-  "https://ad9be5b6b219.ngrok-free.app/auth/callback",
-  "https://ad9be5b6b219.ngrok-free.app/auth/shopify/callback",
-  "https://ad9be5b6b219.ngrok-free.app/api/auth/callback"
+  "https://post-purchase-app.vercel.app/auth/callback",
+  "https://post-purchase-app.vercel.app/auth/shopify/callback",
+  "https://post-purchase-app.vercel.app/api/auth/callback"
 ]
 
 [pos]

@@ -1,7 +1,4 @@
-// Related: https://github.com/remix-run/remix/issues/2835#issuecomment-1144102176
-// Replace the HOST env var with SHOPIFY_APP_URL so that it doesn't break the remix server.
-// The CLI will eventually stop passing HOST.
-// Workaround из шаблона Shopify
+// Workaround из шаблона Shopify: переносим HOST -> SHOPIFY_APP_URL
 if (
   process.env.HOST &&
   (!process.env.SHOPIFY_APP_URL ||
@@ -12,11 +9,19 @@ if (
 }
 
 /** @type {import('@remix-run/dev').AppConfig} */
-module.exports = {
-  ignoredRouteFiles: ["**/.*"],
+export default {
   appDirectory: "app",
-  serverModuleFormat: "cjs",
-  dev: { port: process.env.HMR_SERVER_PORT || 8002 },
-  serverDependenciesToBundle: [/^@shopify\/app-bridge.*/], // <-- опционально
+  ignoredRouteFiles: ["**/.*"],
+
+  // ВАЖНО: сервер для Vercel
+  server: "@remix-run/vercel",
+  serverModuleFormat: "esm",
+
+  // иногда нужно, чтобы app-bridge не попал в отдельный external
+  serverDependenciesToBundle: [/^@shopify\/app-bridge.*/],
+
+  // dev-порт только локально, Vercel это не использует
+  dev: { port: Number(process.env.HMR_SERVER_PORT) || 8002 },
+
   future: {},
 };
